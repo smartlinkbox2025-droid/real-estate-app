@@ -353,8 +353,12 @@ export async function resetDatabase(): Promise<void> {
 }
 
 export async function seedDemoData(): Promise<void> {
+  if (localStorage.getItem('sre_demo_seeded')) return;
   const propCount = await db.properties.count();
-  if (propCount > 0) return;
+  if (propCount > 0) {
+    localStorage.setItem('sre_demo_seeded', '1');
+    return;
+  }
   const now = new Date();
   const props: Property[] = [
     { id: uuid(), name: 'برج الياسمين', type: 'building', status: 'vacant', address: 'شارع الملك فهد', city: 'الرياض', price: 1200000, currency: 'SAR', createdAt: now, updatedAt: now },
@@ -367,6 +371,6 @@ export async function seedDemoData(): Promise<void> {
     { id: uuid(), fullName: 'محمد أحمد الغامدي', nationalId: '1023456789', phone: '0555123456', email: 'm.ghamdi@example.sa', address: 'حي الملز', city: 'الرياض', createdAt: now },
     { id: uuid(), fullName: 'خديجة عبدالله السبيعي', nationalId: '1099887766', phone: '0561234567', email: 'k.subaie@example.sa', address: 'حي الصفا', city: 'جدة', createdAt: now },
   ];
-  await db.customers.bulkAdd(customers);
-  await logActivity('تهيئة بيانات تجريبية', 'system', 'عقارات وعملاء');
+    await logActivity('تهيئة بيانات تجريبية', 'system', 'عقارات وعملاء');
+  localStorage.setItem('sre_demo_seeded', '1');
 }
