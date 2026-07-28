@@ -132,6 +132,7 @@ export default function Payments() {
         subtitle: `${filtered.length} فاتورة — ${new Date().toLocaleDateString('en-SA')}`,
         companyName: settings?.companyName,
         logoBase64: settings?.logoBase64,
+        pageOrientation: 'landscape',
         filename: `الفواتير_${new Date().toISOString().slice(0, 10)}.pdf`,
         sections: [{
           table: {
