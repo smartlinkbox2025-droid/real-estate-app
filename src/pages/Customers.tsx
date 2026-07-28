@@ -17,6 +17,7 @@ import { Plus, Pencil, Trash2, Search, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { exportToExcel } from '../utils/excelExporter';
 import { generateArabicPDF } from '../utils/pdfGenerator';
+import { isValidSaudiMobile, normalizeSaudiPhone } from '../utils/phoneHelpers';
 
 export default function Customers() {
   const customers = useLiveQuery(() => db.customers.toArray(), []) || [];
@@ -140,16 +141,21 @@ function CustomerDialog({ open, onOpenChange, editing }: { open: boolean; onOpen
   const [form, setForm] = useState<Partial<Customer>>({});
 
   useEffect(() => {
-    if (editing) setForm(editing);
-    else setForm({ fullName: '', nationalId: '', phone: '', email: '', address: '', city: 'الرياض', notes: '' });
+    if (editing) setForm({ ...editing, phone: normalizeSaudiPhone(editing.phone) });
+    else setForm({ fullName: '', nationalId: '', phone: '966', email: '', address: '', city: 'الرياض', notes: '' });
   }, [editing, open]);
 
   const submit = async () => {
     if (!form.fullName || !form.nationalId || !form.phone) { toast.error('يرجى تعبئة الحقول الإلزامية'); return; }
+    const phone = normalizeSaudiPhone(form.phone);
+    if (!isValidSaudiMobile(phone)) {
+      toast.error('رقم الجوال يجب أن يبدأ بـ 9665 ويتكون من 12 رقماً');
+      return;
+    }
     try {
-      if (editing?.id) { await updateCustomer(editing.id, form); toast.success('تم تحديث بيانات العميل'); }
+      if (editing?.id) { await updateCustomer(editing.id, { ...form, phone }); toast.success('تم تحديث بيانات العميل'); }
       else {
-        await createCustomer({ fullName: form.fullName!, nationalId: form.nationalId!, phone: form.phone!, email: form.email || '', address: form.address || '', city: form.city || 'الرياض', notes: form.notes });
+        await createCustomer({ fullName: form.fullName!, nationalId: form.nationalId!, phone, email: form.email || '', address: form.address || '', city: form.city || 'الرياض', notes: form.notes });
         toast.success('تمت إضافة العميل');
       }
       onOpenChange(false);
@@ -163,7 +169,17 @@ function CustomerDialog({ open, onOpenChange, editing }: { open: boolean; onOpen
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label={AR.customer.fullName} className="md:col-span-2"><Input value={form.fullName || ''} onChange={(e) => setForm({ ...form, fullName: e.target.value })} data-testid="customer-name-input" /></Field>
           <Field label={AR.customer.nationalId}><Input value={form.nationalId || ''} onChange={(e) => setForm({ ...form, nationalId: e.target.value })} data-testid="customer-id-input" /></Field>
-          <Field label={AR.customer.phone}><Input dir="ltr" value={form.phone || ''} onChange={(e) => setForm({ ...form, phone: e.target.value })} data-testid="customer-phone-input" /></Field>
+          <Field label={`${AR.customer.phone} (966)`}>
+            <Input
+              dir="ltr"
+              inputMode="tel"
+              placeholder="9665XXXXXXXX"
+              value={form.phone || ''}
+              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              onBlur={(e) => setForm({ ...form, phone: normalizeSaudiPhone(e.target.value) || '966' })}
+              data-testid="customer-phone-input"
+            />
+          </Field>
           <Field label={AR.customer.email}><Input type="email" dir="ltr" value={form.email || ''} onChange={(e) => setForm({ ...form, email: e.target.value })} data-testid="customer-email-input" /></Field>
           <Field label={AR.customer.city}>
             <Select value={form.city || 'الرياض'} onValueChange={(v) => setForm({ ...form, city: v })}>

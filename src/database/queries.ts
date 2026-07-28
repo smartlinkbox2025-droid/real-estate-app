@@ -446,8 +446,8 @@ export async function seedDemoData(): Promise<void> {
   ];
   await db.properties.bulkAdd(props);
   const customers: Customer[] = [
-    { id: uuid(), fullName: 'محمد أحمد الغامدي', nationalId: '1023456789', phone: '0555123456', email: 'm.ghamdi@example.sa', address: 'حي الملز', city: 'الرياض', createdAt: now },
-    { id: uuid(), fullName: 'خديجة عبدالله السبيعي', nationalId: '1099887766', phone: '0561234567', email: 'k.subaie@example.sa', address: 'حي الصفا', city: 'جدة', createdAt: now },
+    { id: uuid(), fullName: 'محمد أحمد الغامدي', nationalId: '1023456789', phone: '966555123456', email: 'm.ghamdi@example.sa', address: 'حي الملز', city: 'الرياض', createdAt: now },
+    { id: uuid(), fullName: 'خديجة عبدالله السبيعي', nationalId: '1099887766', phone: '966561234567', email: 'k.subaie@example.sa', address: 'حي الصفا', city: 'جدة', createdAt: now },
   ];
   await db.customers.bulkAdd(customers);
     await logActivity('تهيئة بيانات تجريبية', 'system', 'عقارات وعملاء');

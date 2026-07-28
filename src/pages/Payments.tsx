@@ -17,6 +17,11 @@ import { Wallet, Search, Receipt, FileDown, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { exportToExcel } from '../utils/excelExporter';
 import { generateReceipt, generateArabicPDF } from '../utils/pdfGenerator';
+import {
+  buildInvoiceWhatsAppMessage,
+  buildWhatsAppUrl,
+} from '../utils/phoneHelpers';
+import { WhatsAppIcon } from '../components/icons/WhatsAppIcon';
 
 const INV_TONE: Record<InvoiceStatus, string> = {
   paid:    'bg-success/15 text-success border-success/30',
@@ -85,6 +90,27 @@ export default function Payments() {
       toast.success('تم حذف السداد وإعادة حساب الفاتورة والعقد');
     } catch (error: any) {
       toast.error(error?.message || 'تعذّر حذف السداد');
+    }
+  };
+
+  const sendInvoiceReminder = (invoice: typeof invoices[0], balance: number) => {
+    const customer = customers.find((item) => item.id === invoice.customerId);
+    if (!customer) {
+      toast.error('تعذّر العثور على بيانات العميل المرتبط بالفاتورة');
+      return;
+    }
+    try {
+      const message = buildInvoiceWhatsAppMessage({
+        customerName: customer.fullName,
+        invoiceNumber: invoice.invoiceNumber,
+        dueDate: fmtDate(invoice.dueDate),
+        amountDue: fmtMoney(balance),
+        companyName: settings?.companyName,
+      });
+      const url = buildWhatsAppUrl(customer.phone, message);
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (error: any) {
+      toast.error(error?.message || 'تعذّر فتح واتساب');
     }
   };
 
@@ -280,7 +306,7 @@ export default function Payments() {
                     <TableHead>{AR.invoice.amountDue}</TableHead>
                     <TableHead>{AR.invoice.balance}</TableHead>
                     <TableHead>{AR.invoice.status}</TableHead>
-                    <TableHead className="text-left">{AR.payment.recordPayment}</TableHead>
+                    <TableHead className="text-left">الإجراءات</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -299,9 +325,22 @@ export default function Payments() {
                         <TableCell><Badge variant="outline" className={INV_TONE[i.status]}>{AR.invoice.statuses[i.status]}</Badge></TableCell>
                         <TableCell>
                           {balance > 0 && i.status !== 'canceled' && (
-                            <Button size="sm" variant="outline" onClick={() => setPayDialog({ invoiceId: i.id!, contractId: i.contractId, balance })} data-testid={`pay-invoice-${i.id}`}>
-                              {AR.payment.recordPayment}
-                            </Button>
+                            <div className="flex items-center gap-1.5 whitespace-nowrap">
+                              <Button size="sm" variant="outline" onClick={() => setPayDialog({ invoiceId: i.id!, contractId: i.contractId, balance })} data-testid={`pay-invoice-${i.id}`}>
+                                {AR.payment.recordPayment}
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-8 w-8 text-[#25D366] hover:bg-[#25D366]/10 hover:text-[#128C7E]"
+                                onClick={() => sendInvoiceReminder(i, balance)}
+                                title="إرسال تذكير بالسداد عبر واتساب"
+                                aria-label={`إرسال تذكير واتساب للفاتورة ${i.invoiceNumber}`}
+                                data-testid={`whatsapp-invoice-${i.id}`}
+                              >
+                                <WhatsAppIcon className="h-5 w-5" />
+                              </Button>
+                            </div>
                           )}
                         </TableCell>
                       </TableRow>

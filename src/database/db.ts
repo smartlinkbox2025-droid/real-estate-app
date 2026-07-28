@@ -45,7 +45,7 @@ export async function ensureDefaults(): Promise<SystemSettings> {
     id: 'singleton',
     ownerName: '',
     companyName: 'المتخصص الذكي للعقارات',
-    phone: '',
+    phone: '966',
     email: '',
     taxNumber: '',
     currency: 'SAR',

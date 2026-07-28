@@ -18,6 +18,7 @@ import { Plus, Pencil, Trash2, Wrench, CheckCircle2, FileDown } from 'lucide-rea
 import { toast } from 'sonner';
 import { exportToExcel } from '../utils/excelExporter';
 import { generateArabicPDF } from '../utils/pdfGenerator';
+import { isValidSaudiMobile, normalizeSaudiPhone } from '../utils/phoneHelpers';
 
 const STATUS_TONE: Record<MaintenanceStatus, string> = {
   pending:     'bg-warning/15 text-warning border-warning/30',
@@ -173,16 +174,24 @@ function MaintenanceDialog({ open, onOpenChange, editing, properties }: { open: 
   const [form, setForm] = useState<Partial<MaintenanceItem>>({});
 
   useEffect(() => {
-    if (editing) setForm(editing);
+    if (editing) setForm({
+      ...editing,
+      vendorPhone: editing.vendorPhone ? normalizeSaudiPhone(editing.vendorPhone) : '',
+    });
     else setForm({ propertyId: '', title: '', description: '', status: 'pending', priority: 'medium', cost: 0, vendorName: '', vendorPhone: '' });
   }, [editing, open]);
 
   const submit = async () => {
     if (!form.propertyId || !form.title) { toast.error('يرجى اختيار العقار وإدخال عنوان الطلب'); return; }
+    const vendorPhone = form.vendorPhone ? normalizeSaudiPhone(form.vendorPhone) : '';
+    if (vendorPhone && !isValidSaudiMobile(vendorPhone)) {
+      toast.error('رقم جوال المقاول يجب أن يبدأ بـ 9665 ويتكون من 12 رقماً');
+      return;
+    }
     try {
-      if (editing?.id) { await updateMaintenanceItem(editing.id, form); toast.success('تم تحديث طلب الصيانة'); }
+      if (editing?.id) { await updateMaintenanceItem(editing.id, { ...form, vendorPhone }); toast.success('تم تحديث طلب الصيانة'); }
       else {
-        await createMaintenanceItem({ propertyId: form.propertyId!, title: form.title!, description: form.description || '', status: form.status as MaintenanceStatus || 'pending', priority: form.priority as MaintenancePriority || 'medium', cost: Number(form.cost) || 0, vendorName: form.vendorName, vendorPhone: form.vendorPhone, scheduledDate: form.scheduledDate });
+        await createMaintenanceItem({ propertyId: form.propertyId!, title: form.title!, description: form.description || '', status: form.status as MaintenanceStatus || 'pending', priority: form.priority as MaintenancePriority || 'medium', cost: Number(form.cost) || 0, vendorName: form.vendorName, vendorPhone: vendorPhone || undefined, scheduledDate: form.scheduledDate });
         toast.success('تم إضافة طلب الصيانة');
       }
       onOpenChange(false);
@@ -216,7 +225,16 @@ function MaintenanceDialog({ open, onOpenChange, editing, properties }: { open: 
           <Field label={AR.common.cost}><Input type="number" value={form.cost ?? 0} onChange={(e) => setForm({ ...form, cost: parseFloat(e.target.value) })} /></Field>
           <Field label={AR.common.date_scheduled}><Input type="date" value={form.scheduledDate ? toISODate(new Date(form.scheduledDate)) : ''} onChange={(e) => setForm({ ...form, scheduledDate: e.target.value ? new Date(e.target.value) : undefined })} /></Field>
           <Field label={AR.common.vendor}><Input value={form.vendorName || ''} onChange={(e) => setForm({ ...form, vendorName: e.target.value })} /></Field>
-          <Field label={AR.common.phone}><Input dir="ltr" value={form.vendorPhone || ''} onChange={(e) => setForm({ ...form, vendorPhone: e.target.value })} /></Field>
+          <Field label={`${AR.common.phone} (966)`}>
+            <Input
+              dir="ltr"
+              inputMode="tel"
+              placeholder="9665XXXXXXXX"
+              value={form.vendorPhone || ''}
+              onChange={(e) => setForm({ ...form, vendorPhone: e.target.value })}
+              onBlur={(e) => setForm({ ...form, vendorPhone: normalizeSaudiPhone(e.target.value) })}
+            />
+          </Field>
           <Field label={AR.maintenance.description} className="md:col-span-2"><Textarea value={form.description || ''} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
         </div>
         <DialogFooter className="gap-2 sm:gap-2">

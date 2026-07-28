@@ -13,6 +13,7 @@ import { resetDatabase } from '../database/queries';
 import { toast } from 'sonner';
 import type { SystemSettings } from '../models/types';
 import DataEngine from '../backup/DataEngine';
+import { isValidSaudiMobile, normalizeSaudiPhone } from '../utils/phoneHelpers';
 
 export default function SettingsPage() {
   const settings = useLiveQuery(() => db.settings.get('singleton'), []);
@@ -20,13 +21,22 @@ export default function SettingsPage() {
   const logoInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (settings) setForm(settings);
+    if (settings) setForm({
+      ...settings,
+      phone: normalizeSaudiPhone(settings.phone) || '966',
+    });
     else ensureDefaults();
   }, [settings]);
 
   const save = async () => {
     if (!form) return;
-    await db.settings.put(form);
+    const phone = normalizeSaudiPhone(form.phone);
+    if (!isValidSaudiMobile(phone)) {
+      toast.error('رقم الجوال يجب أن يبدأ بـ 9665 ويتكون من 12 رقماً');
+      return;
+    }
+    await db.settings.put({ ...form, phone });
+    setForm({ ...form, phone });
     toast.success('تم حفظ الإعدادات');
   };
 
@@ -72,7 +82,17 @@ export default function SettingsPage() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label={AR.settings.ownerName}><Input value={form.ownerName} onChange={(e) => setForm({ ...form, ownerName: e.target.value })} data-testid="settings-owner-input" /></Field>
           <Field label={AR.settings.companyName}><Input value={form.companyName} onChange={(e) => setForm({ ...form, companyName: e.target.value })} data-testid="settings-company-input" /></Field>
-          <Field label={AR.settings.phone}><Input dir="ltr" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} data-testid="settings-phone-input" /></Field>
+          <Field label={`${AR.settings.phone} (966)`}>
+            <Input
+              dir="ltr"
+              inputMode="tel"
+              placeholder="9665XXXXXXXX"
+              value={form.phone}
+              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              onBlur={(e) => setForm({ ...form, phone: normalizeSaudiPhone(e.target.value) || '966' })}
+              data-testid="settings-phone-input"
+            />
+          </Field>
           <Field label={AR.settings.email}><Input type="email" dir="ltr" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} data-testid="settings-email-input" /></Field>
           <Field label={AR.settings.taxNumber}><Input value={form.taxNumber || ''} onChange={(e) => setForm({ ...form, taxNumber: e.target.value })} data-testid="settings-tax-input" /></Field>
           <Field label={AR.settings.currency}><Input value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} data-testid="settings-currency-input" /></Field>
