@@ -5,7 +5,9 @@ import { AR } from '../constants/arabicTerms';
 import { fmtDate, fmtMoney, toISODate } from '../utils/dateHelpers';
 import {
   buildInvoiceFinancialRows,
-  effectivePaymentAmount,
+  buildCashPaymentFinancialRows,
+  filterCashPaymentFinancialRows,
+  summarizeCashPaymentRows,
   summarizeInvoiceFinancialPeriod,
   type SettlementFilter,
 } from '../utils/financialCalculations';
@@ -51,54 +53,40 @@ export default function FinancialReport() {
   );
   const {
     rows: filteredRows,
-    totalRevenue,
+    totalRevenue: settledFromPeriodDues,
     totalDue,
     totalOutstanding,
   } = periodSummary;
+  const allCashPaymentRows = useMemo(
+    () => buildCashPaymentFinancialRows(invoices, payments),
+    [invoices, payments],
+  );
+  const filteredCashPaymentRows = useMemo(
+    () => filterCashPaymentFinancialRows(allCashPaymentRows, {
+      from: fromD,
+      to: toD,
+      customerId,
+      settlement,
+    }).sort(
+      (a, b) => new Date(b.payment.paymentDate).getTime() - new Date(a.payment.paymentDate).getTime(),
+    ),
+    [allCashPaymentRows, from, to, customerId, settlement],
+  );
+  const { cashRevenue } = useMemo(
+    () => summarizeCashPaymentRows(filteredCashPaymentRows),
+    [filteredCashPaymentRows],
+  );
 
   const customerById = useMemo(
     () => new Map(customers.map((customer) => [customer.id, customer.fullName])),
     [customers],
   );
-  const paymentsByInvoice = useMemo(() => {
-    const grouped = new Map<string, typeof payments>();
-    for (const payment of payments) {
-      if (effectivePaymentAmount(payment) <= 0) continue;
-      const invoicePayments = grouped.get(payment.invoiceId) || [];
-      invoicePayments.push(payment);
-      grouped.set(payment.invoiceId, invoicePayments);
-    }
-    for (const invoicePayments of grouped.values()) {
-      invoicePayments.sort(
-        (a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime(),
-      );
-    }
-    return grouped;
-  }, [payments]);
   const detailRows = useMemo(
     () => [...filteredRows].sort(
       (a, b) => new Date(b.invoice.dueDate).getTime() - new Date(a.invoice.dueDate).getTime(),
     ),
     [filteredRows],
   );
-
-  const paymentDatesForInvoice = (invoiceId?: string) =>
-    (paymentsByInvoice.get(invoiceId || '') || [])
-      .map((payment) => fmtDate(payment.paymentDate))
-      .join('، ') || '—';
-
-  const paymentMethodsForInvoice = (invoiceId?: string) =>
-    [...new Set(
-      (paymentsByInvoice.get(invoiceId || '') || [])
-        .map((payment) => AR.payment.methods[payment.paymentMethod]),
-    )].join('، ') || '—';
-
-  const referencesForInvoice = (invoiceId?: string) =>
-    [...new Set(
-      (paymentsByInvoice.get(invoiceId || '') || [])
-        .map((payment) => payment.referenceNumber)
-        .filter(Boolean),
-    )].join('، ') || '—';
 
   const selectedCustomerName = customerId === 'all'
     ? 'كل العملاء'
@@ -116,19 +104,25 @@ export default function FinancialReport() {
       const key = format(dueDate, 'yyyy-MM');
       const name = format(dueDate, 'MMM yy', { locale: ar });
       months[key] ||= { name, إيرادات: 0, مستحق: 0 };
-      months[key].إيرادات += row.paid;
       months[key].مستحق += row.invoice.amountDue;
+    }
+    for (const row of filteredCashPaymentRows) {
+      const paymentDate = new Date(row.payment.paymentDate);
+      const key = format(paymentDate, 'yyyy-MM');
+      const name = format(paymentDate, 'MMM yy', { locale: ar });
+      months[key] ||= { name, إيرادات: 0, مستحق: 0 };
+      months[key].إيرادات += row.amount;
     }
     return Object.entries(months)
       .sort(([a], [b]) => (a < b ? -1 : 1))
       .map(([, value]) => value);
-  }, [filteredRows]);
+  }, [filteredRows, filteredCashPaymentRows]);
 
   const exportPdf = async () => {
     try {
       await generateArabicPDF({
         title: 'التقرير المالي الشامل',
-        subtitle: `فترة الاستحقاق: ${fmtDate(fromD)} — ${fmtDate(toD)} · العميل: ${selectedCustomerName} · الحالة: ${settlementLabel}`,
+        subtitle: `فترة التقرير: ${fmtDate(fromD)} — ${fmtDate(toD)} · العميل: ${selectedCustomerName} · الحالة: ${settlementLabel}`,
         companyName: settings?.companyName,
         logoBase64: settings?.logoBase64,
         sections: [
@@ -137,18 +131,39 @@ export default function FinancialReport() {
             table: {
               headers: ['البند', 'المبلغ'],
               rows: [
-                [AR.reports.revenue, fmtMoney(totalRevenue)],
+                ['الإيرادات النقدية حسب تاريخ السداد', fmtMoney(cashRevenue)],
                 ['إجمالي المستحقات', fmtMoney(totalDue)],
+                ['المسدد من مستحقات الفترة', fmtMoney(settledFromPeriodDues)],
                 ['المتبقي غير المسدد', fmtMoney(totalOutstanding)],
               ],
             },
           },
           {
-            heading: 'تفاصيل الاستحقاقات والمدفوعات',
+            heading: 'تفاصيل المدفوعات خلال الفترة',
+            table: {
+              headers: [
+                AR.payment.paymentDate,
+                'اسم العميل',
+                AR.invoice.number,
+                AR.payment.amountPaid,
+                AR.payment.paymentMethod,
+                AR.payment.referenceNumber,
+              ],
+              rows: filteredCashPaymentRows.map((row) => [
+                fmtDate(row.payment.paymentDate),
+                customerById.get(row.invoice.customerId) || '—',
+                row.invoice.invoiceNumber,
+                fmtMoney(row.amount),
+                AR.payment.methods[row.payment.paymentMethod],
+                row.payment.referenceNumber || '—',
+              ]),
+            },
+          },
+          {
+            heading: 'تفاصيل الاستحقاقات خلال الفترة',
             table: {
               headers: [
                 AR.invoice.dueDate,
-                AR.payment.paymentDate,
                 'اسم العميل',
                 AR.invoice.number,
                 AR.invoice.amountDue,
@@ -158,7 +173,6 @@ export default function FinancialReport() {
               ],
               rows: detailRows.map((row) => [
                 fmtDate(row.invoice.dueDate),
-                paymentDatesForInvoice(row.invoice.id),
                 customerById.get(row.invoice.customerId) || '—',
                 row.invoice.invoiceNumber,
                 fmtMoney(row.invoice.amountDue),
@@ -180,32 +194,61 @@ export default function FinancialReport() {
   const exportExcel = () => {
     exportToExcel({
       filename: `تقرير_مالي_${from}_${to}`,
-      sheetName: 'التقرير المالي',
-      headers: [
-        AR.invoice.dueDate,
-        AR.payment.paymentDate,
-        'اسم العميل',
-        AR.invoice.number,
-        AR.invoice.amountDue,
-        AR.invoice.amountPaid,
-        AR.invoice.balance,
-        AR.invoice.status,
-        AR.payment.paymentMethod,
-        AR.payment.referenceNumber,
+      sheets: [
+        {
+          sheetName: 'الملخص',
+          headers: ['البند', 'المبلغ'],
+          rows: [
+            ['الإيرادات النقدية حسب تاريخ السداد', cashRevenue],
+            ['إجمالي المستحقات', totalDue],
+            ['المسدد من مستحقات الفترة', settledFromPeriodDues],
+            ['المتبقي غير المسدد', totalOutstanding],
+          ],
+          columnWidths: [36, 18],
+        },
+        {
+          sheetName: 'المدفوعات',
+          headers: [
+            AR.payment.paymentDate,
+            'اسم العميل',
+            AR.invoice.number,
+            AR.payment.amountPaid,
+            AR.payment.paymentMethod,
+            AR.payment.referenceNumber,
+          ],
+          rows: filteredCashPaymentRows.map((row) => [
+            row.payment.paymentDate instanceof Date ? row.payment.paymentDate : new Date(row.payment.paymentDate),
+            customerById.get(row.invoice.customerId) || '—',
+            row.invoice.invoiceNumber,
+            row.amount,
+            AR.payment.methods[row.payment.paymentMethod],
+            row.payment.referenceNumber || '',
+          ]),
+          columnWidths: [16, 26, 18, 16, 22, 20],
+        },
+        {
+          sheetName: 'الاستحقاقات',
+          headers: [
+            AR.invoice.dueDate,
+            'اسم العميل',
+            AR.invoice.number,
+            AR.invoice.amountDue,
+            AR.invoice.amountPaid,
+            AR.invoice.balance,
+            AR.invoice.status,
+          ],
+          rows: detailRows.map((row) => [
+            row.invoice.dueDate instanceof Date ? row.invoice.dueDate : new Date(row.invoice.dueDate),
+            customerById.get(row.invoice.customerId) || '—',
+            row.invoice.invoiceNumber,
+            row.invoice.amountDue,
+            row.paid,
+            row.balance,
+            AR.invoice.statuses[row.computedStatus],
+          ]),
+          columnWidths: [16, 26, 18, 16, 16, 16, 18],
+        },
       ],
-      rows: detailRows.map((row) => [
-        row.invoice.dueDate instanceof Date ? row.invoice.dueDate : new Date(row.invoice.dueDate),
-        paymentDatesForInvoice(row.invoice.id),
-        customerById.get(row.invoice.customerId) || '—',
-        row.invoice.invoiceNumber,
-        row.invoice.amountDue,
-        row.paid,
-        row.balance,
-        AR.invoice.statuses[row.computedStatus],
-        paymentMethodsForInvoice(row.invoice.id),
-        referencesForInvoice(row.invoice.id),
-      ]),
-      columnWidths: [16, 22, 26, 18, 16, 16, 16, 16, 22, 20],
     });
     toast.success('تم تصدير ملف إكسل');
   };
@@ -217,7 +260,7 @@ export default function FinancialReport() {
           <BarChart3 className="h-6 w-6" /> {AR.reports.financialTitle}
         </h2>
         <p className="text-sm text-muted-foreground mt-1">
-          تحليل مالي حسب فترة استحقاق الفواتير — إجمالي المستحقات يساوي الإيرادات المحصلة مضافاً إليها المتبقي.
+          الإيرادات تُحتسب حسب تاريخ السداد الفعلي، بينما المستحقات والمتبقي يُحتسبان حسب تاريخ استحقاق الفاتورة.
         </p>
       </div>
 
@@ -261,10 +304,11 @@ export default function FinancialReport() {
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         {[
-          { label: AR.reports.revenue, value: fmtMoney(totalRevenue), cls: 'text-success' },
+          { label: 'الإيرادات النقدية خلال الفترة', value: fmtMoney(cashRevenue), cls: 'text-success' },
           { label: 'إجمالي المستحقات', value: fmtMoney(totalDue), cls: 'text-accent' },
+          { label: 'المسدد من مستحقات الفترة', value: fmtMoney(settledFromPeriodDues), cls: 'text-success' },
           { label: 'المتبقي غير المسدد', value: fmtMoney(totalOutstanding), cls: 'text-warning' },
         ].map(({ label, value, cls }) => (
           <Card key={label} className="glass border-0">
@@ -277,7 +321,7 @@ export default function FinancialReport() {
       </div>
 
       <Card className="glass border-0">
-        <CardHeader><CardTitle className="text-base">اتجاه الإيرادات مقابل الاستحقاقات</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">الإيرادات النقدية مقابل الاستحقاقات</CardTitle></CardHeader>
         <CardContent>
           <div className="h-72">
             {trend.length === 0 ? (
@@ -300,39 +344,67 @@ export default function FinancialReport() {
       </Card>
 
       <Card className="glass border-0 overflow-hidden">
-        <CardHeader><CardTitle className="text-base">تفاصيل الاستحقاقات والمدفوعات</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">تفاصيل المدفوعات خلال الفترة</CardTitle></CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
-            <Table>
+            <Table className="min-w-[46rem]">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{AR.payment.paymentDate}</TableHead>
+                  <TableHead>اسم العميل</TableHead>
+                  <TableHead>{AR.invoice.number}</TableHead>
+                  <TableHead>{AR.payment.amountPaid}</TableHead>
+                  <TableHead>{AR.payment.paymentMethod}</TableHead>
+                  <TableHead>{AR.payment.referenceNumber}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredCashPaymentRows.length === 0 ? (
+                  <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
+                ) : filteredCashPaymentRows.map((row) => (
+                  <TableRow key={row.payment.id} data-testid="financial-payment-row">
+                    <TableCell>{fmtDate(row.payment.paymentDate)}</TableCell>
+                    <TableCell>{customerById.get(row.invoice.customerId) || '—'}</TableCell>
+                    <TableCell className="num font-semibold">{row.invoice.invoiceNumber}</TableCell>
+                    <TableCell className="num text-success">{fmtMoney(row.amount)}</TableCell>
+                    <TableCell>{AR.payment.methods[row.payment.paymentMethod]}</TableCell>
+                    <TableCell className="num text-xs">{row.payment.referenceNumber || '—'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="glass border-0 overflow-hidden">
+        <CardHeader><CardTitle className="text-base">تفاصيل الاستحقاقات خلال الفترة</CardTitle></CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table className="min-w-[48rem]">
               <TableHeader>
                 <TableRow>
                   <TableHead>{AR.invoice.dueDate}</TableHead>
-                  <TableHead>{AR.payment.paymentDate}</TableHead>
                   <TableHead>اسم العميل</TableHead>
                   <TableHead>{AR.invoice.number}</TableHead>
                   <TableHead>{AR.invoice.amountDue}</TableHead>
                   <TableHead>{AR.invoice.amountPaid}</TableHead>
                   <TableHead>{AR.invoice.balance}</TableHead>
                   <TableHead>{AR.invoice.status}</TableHead>
-                  <TableHead>{AR.payment.paymentMethod}</TableHead>
-                  <TableHead>{AR.payment.referenceNumber}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {detailRows.length === 0 ? (
-                  <TableRow><TableCell colSpan={10} className="text-center py-8 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={7} className="text-center py-8 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
                 ) : detailRows.map((row) => (
                   <TableRow key={row.invoice.id} data-testid="financial-detail-row">
                     <TableCell>{fmtDate(row.invoice.dueDate)}</TableCell>
-                    <TableCell>{paymentDatesForInvoice(row.invoice.id)}</TableCell>
                     <TableCell>{customerById.get(row.invoice.customerId) || '—'}</TableCell>
                     <TableCell className="num font-semibold">{row.invoice.invoiceNumber}</TableCell>
                     <TableCell className="num">{fmtMoney(row.invoice.amountDue)}</TableCell>
                     <TableCell className="num text-success">{fmtMoney(row.paid)}</TableCell>
                     <TableCell className="num text-warning">{fmtMoney(row.balance)}</TableCell>
                     <TableCell>{AR.invoice.statuses[row.computedStatus]}</TableCell>
-                    <TableCell>{paymentMethodsForInvoice(row.invoice.id)}</TableCell>
-                    <TableCell className="num text-xs">{referencesForInvoice(row.invoice.id)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

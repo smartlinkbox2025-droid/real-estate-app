@@ -196,7 +196,7 @@ export const AR = {
     totalProperties: 'إجمالي العقارات',
     activeContracts: 'العقود النشطة',
     totalCustomers: 'إجمالي العملاء',
-    monthlyIncome: 'دخل الشهر',
+    monthlyIncome: 'إيرادات الشهر',
     overdueInvoices: 'فواتير متأخرة',
     occupancyRate: 'نسبة الإشغال',
     upcomingDues: 'الاستحقاقات القادمة',

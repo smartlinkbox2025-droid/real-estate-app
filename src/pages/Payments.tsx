@@ -3,8 +3,8 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../database/db';
 import { AR } from '../constants/arabicTerms';
 import type { PaymentMethod, InvoiceStatus } from '../models/types';
-import { recordPayment } from '../database/queries';
-import { fmtDate, fmtMoney, toISODate } from '../utils/dateHelpers';
+import { deletePayment, recordPayment } from '../database/queries';
+import { fmtDate, fmtMoney, isDateWithinInclusiveRange, toISODate } from '../utils/dateHelpers';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -13,7 +13,7 @@ import { Badge } from '../components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
-import { Wallet, Search, Receipt, FileDown } from 'lucide-react';
+import { Wallet, Search, Receipt, FileDown, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { exportToExcel } from '../utils/excelExporter';
 import { generateReceipt, generateArabicPDF } from '../utils/pdfGenerator';
@@ -35,6 +35,10 @@ export default function Payments() {
 
   const [search, setSearch] = useState('');
   const [historySearch, setHistorySearch] = useState('');
+  const [invoiceDateFrom, setInvoiceDateFrom] = useState('');
+  const [invoiceDateTo, setInvoiceDateTo] = useState('');
+  const [historyDateFrom, setHistoryDateFrom] = useState('');
+  const [historyDateTo, setHistoryDateTo] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | InvoiceStatus>('all');
   const [tab, setTab] = useState<'invoices' | 'history'>('invoices');
   const [payDialog, setPayDialog] = useState<{ invoiceId: string; contractId: string; balance: number } | null>(null);
@@ -46,6 +50,7 @@ export default function Payments() {
     invoices
       .filter((i) => {
         if (statusFilter !== 'all' && i.status !== statusFilter) return false;
+        if (!isDateWithinInclusiveRange(i.dueDate, invoiceDateFrom, invoiceDateTo)) return false;
         if (search) {
           const s = search.toLowerCase();
           if (!i.invoiceNumber.toLowerCase().includes(s) && !custName(i.customerId).toLowerCase().includes(s) && !propName(i.propertyId).toLowerCase().includes(s)) return false;
@@ -53,19 +58,35 @@ export default function Payments() {
         return true;
       })
       .sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()),
-    [invoices, statusFilter, search, properties, customers]);
+    [invoices, statusFilter, search, invoiceDateFrom, invoiceDateTo, properties, customers]);
 
   const filteredHistory = useMemo(() => {
     const term = historySearch.trim().toLocaleLowerCase('ar');
-    if (!term) return payments;
     return payments.filter((payment) => {
+      if (!isDateWithinInclusiveRange(payment.paymentDate, historyDateFrom, historyDateTo)) return false;
+      if (!term) return true;
       const invoice = invoices.find((item) => item.id === payment.invoiceId);
       const invoiceNumber = invoice?.invoiceNumber || '';
       const customerName = custName(invoice?.customerId || '');
       return invoiceNumber.toLocaleLowerCase('en').includes(term.toLocaleLowerCase('en'))
         || customerName.toLocaleLowerCase('ar').includes(term);
     });
-  }, [payments, invoices, customers, historySearch]);
+  }, [payments, invoices, customers, historySearch, historyDateFrom, historyDateTo]);
+
+  const removePayment = async (payment: typeof payments[0]) => {
+    const invoice = invoices.find((item) => item.id === payment.invoiceId);
+    const approved = window.confirm(
+      `هل أنت متأكد من حذف هذا السداد بقيمة ${fmtMoney(payment.amountPaid)}؟\n`
+      + `سيُعاد حساب الفاتورة ${invoice?.invoiceNumber || ''} ورصيد العقد تلقائياً.`,
+    );
+    if (!approved || !payment.id) return;
+    try {
+      await deletePayment(payment.id);
+      toast.success('تم حذف السداد وإعادة حساب الفاتورة والعقد');
+    } catch (error: any) {
+      toast.error(error?.message || 'تعذّر حذف السداد');
+    }
+  };
 
   const exportInvoicesExcel = () => {
     exportToExcel({
@@ -214,7 +235,7 @@ export default function Payments() {
       {tab === 'invoices' && (
         <>
           <Card className="glass border-0 p-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
               <div className="relative">
                 <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input data-testid="payments-search-input" className="pr-9" placeholder="ابحث برقم الفاتورة أو العميل…" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -226,6 +247,24 @@ export default function Payments() {
                   {(Object.keys(AR.invoice.statuses) as InvoiceStatus[]).map((k) => <SelectItem key={k} value={k}>{AR.invoice.statuses[k]}</SelectItem>)}
                 </SelectContent>
               </Select>
+              <Field label="تاريخ الاستحقاق من">
+                <Input
+                  type="date"
+                  value={invoiceDateFrom}
+                  max={invoiceDateTo || undefined}
+                  onChange={(e) => setInvoiceDateFrom(e.target.value)}
+                  data-testid="invoice-date-from"
+                />
+              </Field>
+              <Field label="تاريخ الاستحقاق إلى">
+                <Input
+                  type="date"
+                  value={invoiceDateTo}
+                  min={invoiceDateFrom || undefined}
+                  onChange={(e) => setInvoiceDateTo(e.target.value)}
+                  data-testid="invoice-date-to"
+                />
+              </Field>
             </div>
           </Card>
 
@@ -278,15 +317,35 @@ export default function Payments() {
       {tab === 'history' && (
         <>
           <Card className="glass border-0 p-4">
-            <div className="relative">
-              <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                data-testid="payment-history-search-input"
-                className="pr-9"
-                placeholder="ابحث برقم الفاتورة INV أو اسم العميل…"
-                value={historySearch}
-                onChange={(e) => setHistorySearch(e.target.value)}
-              />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="relative">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  data-testid="payment-history-search-input"
+                  className="pr-9"
+                  placeholder="ابحث برقم الفاتورة INV أو اسم العميل…"
+                  value={historySearch}
+                  onChange={(e) => setHistorySearch(e.target.value)}
+                />
+              </div>
+              <Field label="تاريخ السداد من">
+                <Input
+                  type="date"
+                  value={historyDateFrom}
+                  max={historyDateTo || undefined}
+                  onChange={(e) => setHistoryDateFrom(e.target.value)}
+                  data-testid="payment-history-date-from"
+                />
+              </Field>
+              <Field label="تاريخ السداد إلى">
+                <Input
+                  type="date"
+                  value={historyDateTo}
+                  min={historyDateFrom || undefined}
+                  onChange={(e) => setHistoryDateTo(e.target.value)}
+                  data-testid="payment-history-date-to"
+                />
+              </Field>
             </div>
           </Card>
           <Card className="glass border-0 overflow-hidden">
@@ -300,7 +359,7 @@ export default function Payments() {
                   <TableHead>{AR.payment.amountPaid}</TableHead>
                   <TableHead>{AR.payment.paymentMethod}</TableHead>
                   <TableHead>{AR.payment.referenceNumber}</TableHead>
-                  <TableHead className="text-left">سند قبض</TableHead>
+                  <TableHead className="text-left">الإجراءات</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -317,9 +376,22 @@ export default function Payments() {
                       <TableCell>{AR.payment.methods[p.paymentMethod]}</TableCell>
                       <TableCell className="num text-xs">{p.referenceNumber || '—'}</TableCell>
                       <TableCell>
+                        <div className="flex items-center gap-1">
                         <Button size="icon" variant="ghost" onClick={() => printReceipt(p)} title="سند قبض" data-testid={`receipt-${p.id}`}>
                           <Receipt className="h-4 w-4" />
                         </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => removePayment(p)}
+                          title="حذف السداد"
+                          aria-label="حذف السداد"
+                          data-testid={`delete-payment-${p.id}`}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   );

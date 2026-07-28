@@ -20,7 +20,9 @@ import { exportToExcel } from '../utils/excelExporter';
 import { toast } from 'sonner';
 import {
   buildInvoiceFinancialRows,
-  summarizeInvoiceFinancialPeriod,
+  buildCashPaymentFinancialRows,
+  filterCashPaymentFinancialRows,
+  summarizeCashPaymentRows,
   summarizeInvoiceFinancialRows,
 } from '../utils/financialCalculations';
 
@@ -52,6 +54,10 @@ export default function Dashboard() {
     () => summarizeInvoiceFinancialRows(activeFinancialRows),
     [activeFinancialRows],
   );
+  const cashPaymentRows = useMemo(
+    () => buildCashPaymentFinancialRows(invoices, payments),
+    [invoices, payments],
+  );
   const overdueCount = financialRows.filter((row) => row.computedStatus === 'overdue').length;
   const balanceByInvoice = useMemo(
     () => new Map(financialRows.map((row) => [row.invoice.id, row.balance])),
@@ -60,25 +66,27 @@ export default function Dashboard() {
 
   const monthlyIncome = useMemo(() => {
     const now = new Date();
-    return summarizeInvoiceFinancialPeriod(financialRows, {
+    const monthPayments = filterCashPaymentFinancialRows(cashPaymentRows, {
       from: startOfMonth(now),
       to: endOfMonth(now),
-    }).totalRevenue;
-  }, [financialRows]);
+    });
+    return summarizeCashPaymentRows(monthPayments).cashRevenue;
+  }, [cashPaymentRows]);
 
   const revenueData = useMemo(() => {
     const months: { name: string; إيرادات: number }[] = [];
     for (let i = 5; i >= 0; i--) {
       const m = startOfMonth(subMonths(new Date(), i));
       const label = format(m, 'MMM', { locale: ar });
-      const revenue = summarizeInvoiceFinancialPeriod(financialRows, {
+      const monthPayments = filterCashPaymentFinancialRows(cashPaymentRows, {
         from: startOfMonth(m),
         to: endOfMonth(m),
-      }).totalRevenue;
+      });
+      const revenue = summarizeCashPaymentRows(monthPayments).cashRevenue;
       months.push({ name: label, إيرادات: revenue });
     }
     return months;
-  }, [financialRows]);
+  }, [cashPaymentRows]);
 
   const distribution = useMemo(() => {
     const map: Record<string, number> = {};

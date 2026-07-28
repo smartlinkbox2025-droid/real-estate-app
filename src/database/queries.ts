@@ -5,7 +5,10 @@ import type {
   Property, Customer, Contract, Invoice, Payment, DocumentFile,
   ActivityLog, MaintenanceItem, Task,
 } from '../models/types';
-import { roundCurrency } from '../utils/financialCalculations';
+import {
+  calculateInvoiceStateFromPayments,
+  roundCurrency,
+} from '../utils/financialCalculations';
 import { allocateInvoiceAmounts, calculateIntervals } from '../utils/contractCalculations';
 export { calculateIntervals } from '../utils/contractCalculations';
 
@@ -209,6 +212,42 @@ export async function recordPayment(data: Omit<Payment, 'id'>): Promise<string> 
     });
   });
   return id;
+}
+
+export async function deletePayment(id: string): Promise<void> {
+  await db.transaction('rw', db.payments, db.invoices, db.contracts, db.activityLogs, async () => {
+    const payment = await db.payments.get(id);
+    if (!payment) throw new Error('عملية السداد غير موجودة.');
+
+    const invoice = await db.invoices.get(payment.invoiceId);
+    if (!invoice) throw new Error('لا يمكن حذف السداد لأن الفاتورة المرتبطة غير موجودة.');
+
+    await db.payments.delete(id);
+    const remainingPayments = await db.payments.where('invoiceId').equals(invoice.id!).toArray();
+    const invoiceState = calculateInvoiceStateFromPayments(invoice, remainingPayments);
+
+    await db.invoices.update(invoice.id!, {
+      amountPaid: invoiceState.paid,
+      status: invoiceState.computedStatus,
+    });
+
+    const contractInvoices = await db.invoices.where('contractId').equals(invoice.contractId).toArray();
+    const remainingBalance = contractInvoices.reduce((sum, item) => {
+      if (item.status === 'canceled') return sum;
+      return sum + Math.max(0, item.amountDue - item.amountPaid);
+    }, 0);
+    await db.contracts.update(invoice.contractId, {
+      remainingBalance: roundCurrency(remainingBalance),
+    });
+
+    await db.activityLogs.add({
+      id: uuid(),
+      action: 'حذف سداد',
+      module: 'payments',
+      timestamp: new Date(),
+      details: `${invoice.invoiceNumber} — ${roundCurrency(payment.amountPaid)}`,
+    });
+  });
 }
 
 // ---------- DOCUMENTS ----------
