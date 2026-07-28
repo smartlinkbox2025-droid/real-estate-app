@@ -18,6 +18,11 @@ import { ar } from 'date-fns/locale';
 import { generateArabicPDF } from '../utils/pdfGenerator';
 import { exportToExcel } from '../utils/excelExporter';
 import { toast } from 'sonner';
+import {
+  buildInvoiceFinancialRows,
+  effectivePaymentAmount,
+  summarizeInvoiceFinancialRows,
+} from '../utils/financialCalculations';
 
 const CHART_COLORS = ['#0284C7', '#16A34A', '#CA8A04', '#DC2626', '#7C3AED'];
 
@@ -35,13 +40,29 @@ export default function Dashboard() {
   const activeContracts = contracts.filter((c) => c.status === 'active').length;
   const rented = properties.filter((p) => p.status === 'rented' || p.status === 'sold').length;
   const occupancy = properties.length ? Math.round((rented / properties.length) * 100) : 0;
-  const overdueCount = invoices.filter((i) => i.status === 'overdue').length;
+  const financialRows = useMemo(
+    () => buildInvoiceFinancialRows(invoices, payments),
+    [invoices, payments],
+  );
+  const activeFinancialRows = useMemo(
+    () => financialRows.filter((row) => row.computedStatus !== 'canceled'),
+    [financialRows],
+  );
+  const financialSummary = useMemo(
+    () => summarizeInvoiceFinancialRows(activeFinancialRows),
+    [activeFinancialRows],
+  );
+  const overdueCount = financialRows.filter((row) => row.computedStatus === 'overdue').length;
+  const balanceByInvoice = useMemo(
+    () => new Map(financialRows.map((row) => [row.invoice.id, row.balance])),
+    [financialRows],
+  );
 
   const monthlyIncome = useMemo(() => {
     const now = new Date();
     return payments
       .filter((p) => isSameMonth(new Date(p.paymentDate), now))
-      .reduce((s, p) => s + (p.amountPaid || 0), 0);
+      .reduce((s, p) => s + effectivePaymentAmount(p), 0);
   }, [payments]);
 
   const revenueData = useMemo(() => {
@@ -51,7 +72,7 @@ export default function Dashboard() {
       const label = format(m, 'MMM', { locale: ar });
       const revenue = payments
         .filter((p) => isSameMonth(new Date(p.paymentDate), m))
-        .reduce((s, p) => s + (p.amountPaid || 0), 0);
+        .reduce((s, p) => s + effectivePaymentAmount(p), 0);
       months.push({ name: label, إيرادات: Math.round(revenue) });
     }
     return months;
@@ -67,11 +88,11 @@ export default function Dashboard() {
   }, [properties]);
 
   const upcoming = useMemo(() =>
-    invoices
-      .filter((i) => i.status !== 'paid')
-      .sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime())
+    financialRows
+      .filter((row) => row.computedStatus !== 'paid' && row.computedStatus !== 'canceled')
+      .sort((a, b) => new Date(a.invoice.dueDate).getTime() - new Date(b.invoice.dueDate).getTime())
       .slice(0, 5),
-    [invoices]);
+    [financialRows]);
 
   const exportPdf = async () => {
     try {
@@ -92,6 +113,9 @@ export default function Dashboard() {
                 [AR.dashboard.monthlyIncome, fmtMoney(monthlyIncome)],
                 [AR.dashboard.overdueInvoices, overdueCount],
                 [AR.dashboard.occupancyRate, `${occupancy}%`],
+                [AR.reports.revenue, fmtMoney(financialSummary.totalRevenue)],
+                ['إجمالي المستحقات', fmtMoney(financialSummary.totalDue)],
+                ['المتبقي غير المسدد', fmtMoney(financialSummary.totalOutstanding)],
               ],
             },
           },
@@ -99,10 +123,10 @@ export default function Dashboard() {
             heading: AR.dashboard.upcomingDues,
             table: {
               headers: [AR.invoice.number, AR.invoice.dueDate, AR.invoice.balance],
-              rows: upcoming.map((i) => [
-                i.invoiceNumber,
-                fmtDate(i.dueDate),
-                fmtMoney(i.amountDue - i.amountPaid),
+              rows: upcoming.map((row) => [
+                row.invoice.invoiceNumber,
+                fmtDate(row.invoice.dueDate),
+                fmtMoney(row.balance),
               ]),
             },
           },
@@ -127,6 +151,9 @@ export default function Dashboard() {
         [AR.dashboard.monthlyIncome, fmtMoney(monthlyIncome)],
         [AR.dashboard.overdueInvoices, overdueCount],
         [AR.dashboard.occupancyRate, `${occupancy}%`],
+        [AR.reports.revenue, fmtMoney(financialSummary.totalRevenue)],
+        ['إجمالي المستحقات', fmtMoney(financialSummary.totalDue)],
+        ['المتبقي غير المسدد', fmtMoney(financialSummary.totalOutstanding)],
         ...revenueData.map((m) => [`إيرادات ${m.name}`, m.إيرادات]),
       ],
       columnWidths: [30, 20],
@@ -161,6 +188,9 @@ export default function Dashboard() {
         <Kpi icon={Home}         label={AR.dashboard.occupancyRate}   value={`${occupancy}%`}        tone="success"  testId="kpi-occupancy" />
         <Kpi icon={TrendingUp}   label="إجمالي الفواتير"             value={invoices.length}         tone="accent"   testId="kpi-total-invoices" />
         <Kpi icon={Wallet}       label="إجمالي المدفوعات"            value={payments.length}         tone="primary"  testId="kpi-total-payments" />
+        <Kpi icon={TrendingUp}   label={AR.reports.revenue}           value={fmtMoney(financialSummary.totalRevenue)} tone="success" testId="kpi-total-revenue" />
+        <Kpi icon={FileText}     label="إجمالي المستحقات"             value={fmtMoney(financialSummary.totalDue)} tone="accent" testId="kpi-total-due" />
+        <Kpi icon={AlertTriangle} label="المتبقي غير المسدد"          value={fmtMoney(financialSummary.totalOutstanding)} tone="warning" testId="kpi-total-outstanding" />
       </div>
 
       {/* Charts */}
@@ -217,13 +247,13 @@ export default function Dashboard() {
               <p className="text-sm text-muted-foreground py-6 text-center">{AR.dashboard.noUpcoming}</p>
             ) : (
               <ul className="space-y-2">
-                {upcoming.map((inv) => (
-                  <li key={inv.id} className="flex items-center justify-between rounded-xl px-4 py-3 bg-muted/50" data-testid={`upcoming-invoice-${inv.id}`}>
+                {upcoming.map((row) => (
+                  <li key={row.invoice.id} className="flex items-center justify-between rounded-xl px-4 py-3 bg-muted/50" data-testid={`upcoming-invoice-${row.invoice.id}`}>
                     <div>
-                      <span className="text-sm font-semibold">{inv.invoiceNumber}</span>
-                      <div className="text-xs text-muted-foreground">{AR.invoice.dueDate}: {fmtDate(inv.dueDate)}</div>
+                      <span className="text-sm font-semibold">{row.invoice.invoiceNumber}</span>
+                      <div className="text-xs text-muted-foreground">{AR.invoice.dueDate}: {fmtDate(row.invoice.dueDate)}</div>
                     </div>
-                    <div className="text-sm font-bold num">{fmtMoney(inv.amountDue - inv.amountPaid)}</div>
+                    <div className="text-sm font-bold num">{fmtMoney(balanceByInvoice.get(row.invoice.id) || 0)}</div>
                   </li>
                 ))}
               </ul>

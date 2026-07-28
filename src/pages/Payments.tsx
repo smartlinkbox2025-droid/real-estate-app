@@ -23,6 +23,7 @@ const INV_TONE: Record<InvoiceStatus, string> = {
   partial: 'bg-accent/15 text-accent border-accent/30',
   overdue: 'bg-destructive/15 text-destructive border-destructive/30',
   unpaid:  'bg-warning/15 text-warning border-warning/30',
+  canceled:'bg-muted text-muted-foreground border-border',
 };
 
 export default function Payments() {
@@ -33,6 +34,7 @@ export default function Payments() {
   const settings   = useLiveQuery(() => db.settings.get('singleton'), []);
 
   const [search, setSearch] = useState('');
+  const [historySearch, setHistorySearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | InvoiceStatus>('all');
   const [tab, setTab] = useState<'invoices' | 'history'>('invoices');
   const [payDialog, setPayDialog] = useState<{ invoiceId: string; contractId: string; balance: number } | null>(null);
@@ -53,12 +55,24 @@ export default function Payments() {
       .sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime()),
     [invoices, statusFilter, search, properties, customers]);
 
+  const filteredHistory = useMemo(() => {
+    const term = historySearch.trim().toLocaleLowerCase('ar');
+    if (!term) return payments;
+    return payments.filter((payment) => {
+      const invoice = invoices.find((item) => item.id === payment.invoiceId);
+      const invoiceNumber = invoice?.invoiceNumber || '';
+      const customerName = custName(invoice?.customerId || '');
+      return invoiceNumber.toLocaleLowerCase('en').includes(term.toLocaleLowerCase('en'))
+        || customerName.toLocaleLowerCase('ar').includes(term);
+    });
+  }, [payments, invoices, customers, historySearch]);
+
   const exportInvoicesExcel = () => {
     exportToExcel({
       filename: `الفواتير_${new Date().toISOString().slice(0, 10)}`,
       sheetName: 'الفواتير',
       headers: [AR.invoice.number, AR.contract.customer, AR.contract.property, AR.invoice.dueDate, AR.invoice.amountDue, AR.invoice.amountPaid, AR.invoice.balance, AR.invoice.status],
-      rows: filtered.map((i) => [i.invoiceNumber, custName(i.customerId), propName(i.propertyId), i.dueDate instanceof Date ? i.dueDate : new Date(i.dueDate), i.amountDue, i.amountPaid, i.amountDue - i.amountPaid, AR.invoice.statuses[i.status]]),
+      rows: filtered.map((i) => [i.invoiceNumber, custName(i.customerId), propName(i.propertyId), i.dueDate instanceof Date ? i.dueDate : new Date(i.dueDate), i.amountDue, i.amountPaid, Math.max(0, i.amountDue - i.amountPaid), AR.invoice.statuses[i.status]]),
       columnWidths: [16, 24, 24, 14, 14, 14, 14, 14],
     });
     toast.success('تم تصدير ملف إكسل');
@@ -81,7 +95,7 @@ export default function Payments() {
               propName(i.propertyId),
               fmtDate(i.dueDate),
               fmtMoney(i.amountDue),
-              fmtMoney(i.amountDue - i.amountPaid),
+              fmtMoney(Math.max(0, i.amountDue - i.amountPaid)),
               AR.invoice.statuses[i.status],
             ]),
           },
@@ -96,7 +110,7 @@ export default function Payments() {
       filename: `سجل_المدفوعات_${new Date().toISOString().slice(0, 10)}`,
       sheetName: 'المدفوعات',
       headers: [AR.payment.paymentDate, AR.payment.invoice, AR.contract.customer, AR.contract.property, AR.payment.amountPaid, AR.payment.paymentMethod, AR.payment.referenceNumber],
-      rows: payments.map((p) => {
+      rows: filteredHistory.map((p) => {
         const inv = invoices.find((i) => i.id === p.invoiceId);
         return [
           p.paymentDate instanceof Date ? p.paymentDate : new Date(p.paymentDate),
@@ -117,14 +131,14 @@ export default function Payments() {
     try {
       await generateArabicPDF({
         title: 'سجل المدفوعات',
-        subtitle: `${payments.length} عملية سداد — ${new Date().toLocaleDateString('en-SA')}`,
+        subtitle: `${filteredHistory.length} عملية سداد — ${new Date().toLocaleDateString('en-SA')}`,
         companyName: settings?.companyName,
         logoBase64: settings?.logoBase64,
         filename: `سجل_المدفوعات_${new Date().toISOString().slice(0, 10)}.pdf`,
         sections: [{
           table: {
             headers: [AR.payment.paymentDate, AR.payment.invoice, AR.contract.customer, AR.contract.property, AR.payment.amountPaid, AR.payment.paymentMethod],
-            rows: payments.map((p) => {
+            rows: filteredHistory.map((p) => {
               const inv = invoices.find((i) => i.id === p.invoiceId);
               return [
                 fmtDate(p.paymentDate),
@@ -234,7 +248,7 @@ export default function Payments() {
                   {filtered.length === 0 ? (
                     <TableRow><TableCell colSpan={8} className="text-center py-10 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
                   ) : filtered.map((i) => {
-                    const balance = i.amountDue - i.amountPaid;
+                    const balance = Math.max(0, i.amountDue - i.amountPaid);
                     return (
                       <TableRow key={i.id} data-testid={`invoice-row-${i.id}`}>
                         <TableCell className="num font-semibold">{i.invoiceNumber}</TableCell>
@@ -245,7 +259,7 @@ export default function Payments() {
                         <TableCell className="num">{fmtMoney(balance)}</TableCell>
                         <TableCell><Badge variant="outline" className={INV_TONE[i.status]}>{AR.invoice.statuses[i.status]}</Badge></TableCell>
                         <TableCell>
-                          {balance > 0 && (
+                          {balance > 0 && i.status !== 'canceled' && (
                             <Button size="sm" variant="outline" onClick={() => setPayDialog({ invoiceId: i.id!, contractId: i.contractId, balance })} data-testid={`pay-invoice-${i.id}`}>
                               {AR.payment.recordPayment}
                             </Button>
@@ -262,13 +276,27 @@ export default function Payments() {
       )}
 
       {tab === 'history' && (
-        <Card className="glass border-0 overflow-hidden">
-          <div className="overflow-x-auto">
-            <Table>
+        <>
+          <Card className="glass border-0 p-4">
+            <div className="relative">
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                data-testid="payment-history-search-input"
+                className="pr-9"
+                placeholder="ابحث برقم الفاتورة INV أو اسم العميل…"
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+              />
+            </div>
+          </Card>
+          <Card className="glass border-0 overflow-hidden">
+            <div className="overflow-x-auto">
+              <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>{AR.payment.paymentDate}</TableHead>
                   <TableHead>{AR.payment.invoice}</TableHead>
+                  <TableHead>{AR.contract.customer}</TableHead>
                   <TableHead>{AR.payment.amountPaid}</TableHead>
                   <TableHead>{AR.payment.paymentMethod}</TableHead>
                   <TableHead>{AR.payment.referenceNumber}</TableHead>
@@ -276,14 +304,15 @@ export default function Payments() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {payments.length === 0 ? (
-                  <TableRow><TableCell colSpan={6} className="text-center py-10 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
-                ) : payments.map((p) => {
+                {filteredHistory.length === 0 ? (
+                  <TableRow><TableCell colSpan={7} className="text-center py-10 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
+                ) : filteredHistory.map((p) => {
                   const inv = invoices.find((i) => i.id === p.invoiceId);
                   return (
                     <TableRow key={p.id} data-testid={`payment-row-${p.id}`}>
                       <TableCell>{fmtDate(p.paymentDate)}</TableCell>
                       <TableCell className="num">{inv?.invoiceNumber || '—'}</TableCell>
+                      <TableCell>{custName(inv?.customerId || '')}</TableCell>
                       <TableCell className="num">{fmtMoney(p.amountPaid)}</TableCell>
                       <TableCell>{AR.payment.methods[p.paymentMethod]}</TableCell>
                       <TableCell className="num text-xs">{p.referenceNumber || '—'}</TableCell>
@@ -296,9 +325,10 @@ export default function Payments() {
                   );
                 })}
               </TableBody>
-            </Table>
-          </div>
-        </Card>
+              </Table>
+            </div>
+          </Card>
+        </>
       )}
 
       {payDialog && <PaymentDialog {...payDialog} onClose={() => setPayDialog(null)} />}

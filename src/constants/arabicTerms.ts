@@ -188,6 +188,7 @@ export const AR = {
       partial: 'مسددة جزئياً',
       overdue: 'متأخرة',
       unpaid: 'غير مسددة',
+      canceled: 'ملغاة',
     },
   },
   dashboard: {

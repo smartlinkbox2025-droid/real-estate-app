@@ -169,7 +169,7 @@ export default function MainLayout() {
   );
 
   return (
-    <div className="min-h-screen w-full bg-background text-foreground">
+    <div className="app-shell w-full min-w-0 bg-background text-foreground">
       {/* Ambient blobs */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden -z-10">
         <div className="absolute -top-40 -right-40 h-96 w-96 rounded-full bg-accent/8 blur-3xl" />
@@ -188,7 +188,7 @@ export default function MainLayout() {
             <motion.aside
               initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
               transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-              className="fixed top-0 right-0 bottom-0 z-50 w-72 bg-sidebar p-5 lg:hidden shadow-2xl"
+              className="mobile-sidebar-safe fixed top-0 right-0 bottom-0 z-50 w-[min(18rem,calc(100vw-1rem))] bg-sidebar lg:hidden shadow-2xl"
             >
               <SidebarContent />
             </motion.aside>
@@ -205,9 +205,9 @@ export default function MainLayout() {
       </aside>
 
       {/* Main */}
-      <main className="flex-1 lg:mr-64 pb-24 lg:pb-8">
+      <main className="min-w-0 max-w-full flex-1 lg:mr-64 pb-[calc(6rem+env(safe-area-inset-bottom,0px))] lg:pb-8">
         {/* Top bar */}
-        <header className="sticky top-0 z-20 backdrop-blur-xl bg-background/80 border-b border-border/40 shadow-sm">
+        <header className="app-topbar sticky top-0 z-20 backdrop-blur-xl bg-background/80 border-b border-border/40 shadow-sm">
           <div className="flex items-center justify-between gap-3 px-4 lg:px-6 py-3">
             <div className="flex items-center gap-3">
               {/* Mobile menu button */}
@@ -270,7 +270,7 @@ export default function MainLayout() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-            className="px-4 lg:px-6 pt-5 pb-8"
+            className="app-page-content pt-4 sm:pt-5 pb-8 lg:px-6"
           >
             <Outlet />
           </motion.div>
@@ -279,7 +279,7 @@ export default function MainLayout() {
 
       {/* Bottom nav (mobile) */}
       <nav
-        className="lg:hidden fixed bottom-0 inset-x-0 z-30 border-t border-border/40 bg-background/90 backdrop-blur-xl"
+        className="mobile-bottom-nav-safe lg:hidden fixed bottom-0 inset-x-0 z-30 border-t border-border/40 bg-background/90 backdrop-blur-xl"
         data-testid="mobile-bottom-nav"
       >
         <div className="grid grid-cols-5">

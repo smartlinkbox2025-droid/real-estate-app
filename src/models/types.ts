@@ -7,7 +7,7 @@ export type PaymentFrequency = 'monthly' | 'quarterly' | 'semi_annual' | 'annual
 export type ContractStatus = 'active' | 'extended' | 'terminated' | 'canceled' | 'draft';
 export type PaymentMethod = 'cash' | 'bank_transfer' | 'check' | 'card' | 'ejar_platform';
 export type PaymentStatus = 'completed' | 'partially_refunded' | 'refunded';
-export type InvoiceStatus = 'paid' | 'partial' | 'overdue' | 'unpaid';
+export type InvoiceStatus = 'paid' | 'partial' | 'overdue' | 'unpaid' | 'canceled';
 export type DocumentRelated = 'property' | 'contract' | 'customer';
 export type NotificationType = 'payment_due' | 'contract_expiry' | 'system_alert';
 export type ActivityModule = 'properties' | 'customers' | 'contracts' | 'payments' | 'maintenance' | 'tasks' | 'system';
@@ -68,6 +68,7 @@ export interface Payment {
   referenceNumber?: string;
   notes?: string;
   status: PaymentStatus;
+  refundedAmount?: number;
 }
 
 export interface Invoice {

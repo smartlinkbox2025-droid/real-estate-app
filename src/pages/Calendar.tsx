@@ -32,8 +32,8 @@ export default function Calendar() {
   const events = useMemo((): CalEvent[] => {
     const list: CalEvent[] = [];
     // Invoice due dates
-    invoices.filter((i) => i.status !== 'paid').forEach((i) => {
-      list.push({ date: new Date(i.dueDate), label: `فاتورة ${i.invoiceNumber}`, type: 'invoice', amount: i.amountDue - i.amountPaid, status: i.status });
+    invoices.filter((i) => i.status !== 'paid' && i.status !== 'canceled').forEach((i) => {
+      list.push({ date: new Date(i.dueDate), label: `فاتورة ${i.invoiceNumber}`, type: 'invoice', amount: Math.max(0, i.amountDue - i.amountPaid), status: i.status });
     });
     // Contract end dates
     contracts.filter((c) => c.status === 'active' || c.status === 'extended').forEach((c) => {

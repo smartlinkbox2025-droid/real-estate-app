@@ -264,8 +264,18 @@ function ContractDialog({ open, onOpenChange, properties, customers }: { open: b
 
   const submit = async () => {
     if (!form.propertyId || !form.customerId || !form.totalAmount) { toast.error('يرجى اختيار العقار والعميل وإدخال القيمة'); return; }
+    const startDate = new Date(form.startDate);
+    const endDate = new Date(form.endDate);
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime()) || endDate <= startDate) {
+      toast.error('يجب أن يكون تاريخ نهاية العقد بعد تاريخ البداية');
+      return;
+    }
+    if (!Number.isFinite(Number(form.totalAmount)) || Number(form.totalAmount) <= 0) {
+      toast.error('يجب أن تكون القيمة الإجمالية أكبر من صفر');
+      return;
+    }
     try {
-      const { contractId, invoicesCreated } = await createContractWithInvoices({ ...form, startDate: new Date(form.startDate), endDate: new Date(form.endDate), totalAmount: Number(form.totalAmount), penaltyRate: Number(form.penaltyRate) });
+      const { contractId, invoicesCreated } = await createContractWithInvoices({ ...form, startDate, endDate, totalAmount: Number(form.totalAmount), penaltyRate: Number(form.penaltyRate) });
       // Upload contract image if attached
       if (attachedFile) {
         await uploadDocument(attachedFile, 'contract', contractId);
@@ -293,7 +303,7 @@ function ContractDialog({ open, onOpenChange, properties, customers }: { open: b
           <Field label={AR.contract.customer}>
             <Select value={form.customerId} onValueChange={(v) => setForm({ ...form, customerId: v })}>
               <SelectTrigger data-testid="contract-customer-select"><SelectValue placeholder="اختر العميل" /></SelectTrigger>
-              <SelectContent>
+              <SelectContent className="max-h-64 overflow-y-scroll">
                 {customers.length === 0 && <div className="px-3 py-2 text-xs text-muted-foreground">لا يوجد عملاء</div>}
                 {customers.map((c) => <SelectItem key={c.id} value={c.id!}>{c.fullName} · {c.phone}</SelectItem>)}
               </SelectContent>

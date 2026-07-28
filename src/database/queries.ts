@@ -4,7 +4,9 @@ import type {
   Property, Customer, Contract, Invoice, Payment, DocumentFile,
   ActivityLog, MaintenanceItem, Task,
 } from '../models/types';
-import { addMonths, differenceInCalendarMonths } from 'date-fns';
+import { roundCurrency } from '../utils/financialCalculations';
+import { allocateInvoiceAmounts, calculateIntervals } from '../utils/contractCalculations';
+export { calculateIntervals } from '../utils/contractCalculations';
 
 // ---------- ACTIVITY LOG ----------
 export async function logActivity(
@@ -70,22 +72,6 @@ export async function deleteCustomer(id: string): Promise<void> {
 }
 
 // ---------- CONTRACTS + INVOICE GENERATION ----------
-export function calculateIntervals(
-  start: Date,
-  end: Date,
-  frequency: Contract['paymentFrequency']
-): { dueDate: Date }[] {
-  if (frequency === 'one_time') return [{ dueDate: start }];
-  const monthsPerCycle = frequency === 'monthly' ? 1 : frequency === 'quarterly' ? 3 : frequency === 'semi_annual' ? 6 : 12;
-  const totalMonths = Math.max(1, differenceInCalendarMonths(end, start));
-  const count = Math.max(1, Math.ceil(totalMonths / monthsPerCycle));
-  const list: { dueDate: Date }[] = [];
-  for (let i = 0; i < count; i++) {
-    list.push({ dueDate: addMonths(start, i * monthsPerCycle) });
-  }
-  return list;
-}
-
 function padSeq(n: number): string {
   return n.toString().padStart(4, '0');
 }
@@ -93,9 +79,13 @@ function padSeq(n: number): string {
 export async function createContractWithInvoices(
   data: Omit<Contract, 'id' | 'createdAt' | 'remainingBalance'>
 ): Promise<{ contractId: string; invoicesCreated: number }> {
+  if (!Number.isFinite(data.totalAmount) || data.totalAmount <= 0) {
+    throw new Error('يجب أن تكون القيمة الإجمالية للعقد أكبر من صفر.');
+  }
   const contractId = uuid();
   const intervals = calculateIntervals(data.startDate, data.endDate, data.paymentFrequency);
-  const perAmount = Math.round((data.totalAmount / intervals.length) * 100) / 100;
+  const totalAmount = roundCurrency(data.totalAmount);
+  const invoiceAmounts = allocateInvoiceAmounts(totalAmount, intervals.length);
 
   await db.transaction(
     'rw',
@@ -104,7 +94,8 @@ export async function createContractWithInvoices(
       await db.contracts.add({
         ...data,
         id: contractId,
-        remainingBalance: data.totalAmount,
+        totalAmount,
+        remainingBalance: totalAmount,
         createdAt: new Date(),
       });
       const year = new Date().getFullYear();
@@ -117,7 +108,7 @@ export async function createContractWithInvoices(
         .filter((n) => !isNaN(n));
       let seq = startSeq.length ? Math.max(...startSeq) : 0;
 
-      for (const interval of intervals) {
+      for (const [index, interval] of intervals.entries()) {
         seq += 1;
         const inv: Invoice = {
           id: uuid(),
@@ -126,7 +117,7 @@ export async function createContractWithInvoices(
           propertyId: data.propertyId,
           invoiceNumber: `${prefix}${padSeq(seq)}`,
           dueDate: interval.dueDate,
-          amountDue: perAmount,
+          amountDue: invoiceAmounts[index],
           amountPaid: 0,
           status: 'unpaid',
           createdAt: new Date(),
@@ -148,8 +139,22 @@ export async function createContractWithInvoices(
 export async function terminateContract(id: string): Promise<void> {
   const contract = await db.contracts.get(id);
   if (!contract) return;
-  await db.transaction('rw', db.contracts, db.properties, db.activityLogs, async () => {
-    await db.contracts.update(id, { status: 'terminated' });
+  await db.transaction('rw', db.contracts, db.invoices, db.properties, db.activityLogs, async () => {
+    const now = new Date();
+    const invoices = await db.invoices.where('contractId').equals(id).toArray();
+    let remainingBalance = 0;
+    for (const invoice of invoices) {
+      const shouldCancel = invoice.amountPaid <= 0 && new Date(invoice.dueDate) > now && invoice.status !== 'paid';
+      if (shouldCancel) {
+        await db.invoices.update(invoice.id!, { status: 'canceled' });
+      } else if (invoice.status !== 'canceled') {
+        remainingBalance += Math.max(0, invoice.amountDue - invoice.amountPaid);
+      }
+    }
+    await db.contracts.update(id, {
+      status: 'terminated',
+      remainingBalance: roundCurrency(remainingBalance),
+    });
     await db.properties.update(contract.propertyId, { status: 'vacant', updatedAt: new Date() });
     await db.activityLogs.add({ id: uuid(), action: 'إنهاء عقد', module: 'contracts', timestamp: new Date(), details: id });
   });
@@ -158,9 +163,10 @@ export async function terminateContract(id: string): Promise<void> {
 export async function deleteContract(id: string): Promise<void> {
   const contract = await db.contracts.get(id);
   if (!contract) return;
-  await db.transaction('rw', db.contracts, db.invoices, db.payments, db.properties, db.activityLogs, async () => {
+  await db.transaction('rw', [db.contracts, db.invoices, db.payments, db.documents, db.properties, db.activityLogs], async () => {
     await db.invoices.where('contractId').equals(id).delete();
     await db.payments.where('contractId').equals(id).delete();
+    await db.documents.where('relatedId').equals(id).delete();
     await db.contracts.delete(id);
     await db.properties.update(contract.propertyId, { status: 'vacant', updatedAt: new Date() });
     await db.activityLogs.add({ id: uuid(), action: 'حذف عقد وفواتيره', module: 'contracts', timestamp: new Date(), details: id });
@@ -171,10 +177,16 @@ export async function deleteContract(id: string): Promise<void> {
 export async function recordPayment(data: Omit<Payment, 'id'>): Promise<string> {
   const id = uuid();
   await db.transaction('rw', db.payments, db.invoices, db.contracts, db.activityLogs, async () => {
-    await db.payments.add({ ...data, id });
     const invoice = await db.invoices.get(data.invoiceId);
-    if (!invoice) return;
-    const newPaid = invoice.amountPaid + data.amountPaid;
+    if (!invoice) throw new Error('الفاتورة غير موجودة.');
+    if (invoice.contractId !== data.contractId) throw new Error('الفاتورة لا تتبع العقد المحدد.');
+    if (invoice.status === 'canceled') throw new Error('لا يمكن تسجيل سداد لفاتورة ملغاة.');
+    const amountPaid = roundCurrency(Number(data.amountPaid));
+    const balance = roundCurrency(Math.max(0, invoice.amountDue - invoice.amountPaid));
+    if (!Number.isFinite(amountPaid) || amountPaid <= 0) throw new Error('مبلغ السداد غير صالح.');
+    if (amountPaid > balance) throw new Error('مبلغ السداد يتجاوز الرصيد المتبقي.');
+    await db.payments.add({ ...data, amountPaid, id });
+    const newPaid = roundCurrency(invoice.amountPaid + amountPaid);
     let newStatus: Invoice['status'] = 'unpaid';
     if (newPaid >= invoice.amountDue) newStatus = 'paid';
     else if (newPaid > 0) newStatus = 'partial';
@@ -182,13 +194,17 @@ export async function recordPayment(data: Omit<Payment, 'id'>): Promise<string> 
     await db.invoices.update(data.invoiceId, { amountPaid: newPaid, status: newStatus });
     const contract = await db.contracts.get(data.contractId);
     if (contract) {
+      const contractInvoices = await db.invoices.where('contractId').equals(data.contractId).toArray();
+      const remainingBalance = contractInvoices.reduce((sum, item) => (
+        item.status === 'canceled' ? sum : sum + Math.max(0, item.amountDue - item.amountPaid)
+      ), 0);
       await db.contracts.update(data.contractId, {
-        remainingBalance: Math.max(0, contract.remainingBalance - data.amountPaid),
+        remainingBalance: roundCurrency(remainingBalance),
       });
     }
     await db.activityLogs.add({
       id: uuid(), action: 'تسجيل دفعة', module: 'payments',
-      timestamp: new Date(), details: `${data.amountPaid}`,
+      timestamp: new Date(), details: `${amountPaid}`,
     });
   });
   return id;
@@ -229,12 +245,28 @@ export function downloadDocument(doc: DocumentFile): void {
 export async function refreshOverdueInvoices(): Promise<number> {
   const now = new Date();
   const invoices = await db.invoices.toArray();
+  const contracts = await db.contracts.toArray();
+  const contractStatus = new Map(contracts.map((contract) => [contract.id, contract.status]));
+  const balancesToRefresh = new Set<string>();
   let count = 0;
   for (const inv of invoices) {
+    const status = contractStatus.get(inv.contractId);
+    if ((status === 'terminated' || status === 'canceled') && inv.amountPaid <= 0 && inv.dueDate > now && inv.status !== 'canceled') {
+      await db.invoices.update(inv.id!, { status: 'canceled' });
+      balancesToRefresh.add(inv.contractId);
+      continue;
+    }
     if (inv.status === 'unpaid' && inv.dueDate < now) {
       await db.invoices.update(inv.id!, { status: 'overdue' });
       count++;
     }
+  }
+  for (const contractId of balancesToRefresh) {
+    const contractInvoices = await db.invoices.where('contractId').equals(contractId).toArray();
+    const remainingBalance = contractInvoices.reduce((sum, invoice) => (
+      invoice.status === 'canceled' ? sum : sum + Math.max(0, invoice.amountDue - invoice.amountPaid)
+    ), 0);
+    await db.contracts.update(contractId, { remainingBalance: roundCurrency(remainingBalance) });
   }
   return count;
 }
@@ -371,6 +403,7 @@ export async function seedDemoData(): Promise<void> {
     { id: uuid(), fullName: 'محمد أحمد الغامدي', nationalId: '1023456789', phone: '0555123456', email: 'm.ghamdi@example.sa', address: 'حي الملز', city: 'الرياض', createdAt: now },
     { id: uuid(), fullName: 'خديجة عبدالله السبيعي', nationalId: '1099887766', phone: '0561234567', email: 'k.subaie@example.sa', address: 'حي الصفا', city: 'جدة', createdAt: now },
   ];
+  await db.customers.bulkAdd(customers);
     await logActivity('تهيئة بيانات تجريبية', 'system', 'عقارات وعملاء');
   localStorage.setItem('sre_demo_seeded', '1');
 }

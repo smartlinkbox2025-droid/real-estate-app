@@ -3,10 +3,18 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../database/db';
 import { AR } from '../constants/arabicTerms';
 import { fmtDate, fmtMoney, toISODate } from '../utils/dateHelpers';
+import {
+  buildInvoiceFinancialRows,
+  effectivePaymentAmount,
+  filterInvoiceFinancialRows,
+  summarizeInvoiceFinancialRows,
+  type SettlementFilter,
+} from '../utils/financialCalculations';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
@@ -14,7 +22,7 @@ import { BarChart3 } from 'lucide-react';
 import { generateArabicPDF } from '../utils/pdfGenerator';
 import { exportToExcel } from '../utils/excelExporter';
 import { toast } from 'sonner';
-import { startOfMonth, subMonths, endOfMonth, endOfDay, format, isWithinInterval } from 'date-fns';
+import { startOfMonth, subMonths, endOfMonth, endOfDay, format } from 'date-fns';
 import { ar } from 'date-fns/locale';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend,
@@ -23,47 +31,103 @@ import {
 export default function FinancialReport() {
   const invoices = useLiveQuery(() => db.invoices.toArray(), []) || [];
   const payments = useLiveQuery(() => db.payments.toArray(), []) || [];
+  const customers = useLiveQuery(() => db.customers.orderBy('fullName').toArray(), []) || [];
   const settings = useLiveQuery(() => db.settings.get('singleton'), []);
 
   const today = new Date();
   const [from, setFrom] = useState(toISODate(startOfMonth(subMonths(today, 5))));
   const [to, setTo] = useState(toISODate(endOfMonth(today)));
+  const [customerId, setCustomerId] = useState('all');
+  const [settlement, setSettlement] = useState<SettlementFilter>('all');
 
   const fromD = new Date(from);
   const toD = endOfDay(new Date(to));
-  const filteredPayments = payments.filter((p) =>
-    isWithinInterval(new Date(p.paymentDate), { start: fromD, end: toD })
+  const allRows = useMemo(
+    () => buildInvoiceFinancialRows(invoices, payments),
+    [invoices, payments],
   );
-  const filteredInvoices = invoices.filter((i) =>
-    isWithinInterval(new Date(i.dueDate), { start: fromD, end: toD })
+  const filteredRows = useMemo(
+    () => filterInvoiceFinancialRows(allRows, { from: fromD, to: toD, customerId, settlement }),
+    [allRows, from, to, customerId, settlement],
+  );
+  const { totalRevenue, totalDue, totalOutstanding } = useMemo(
+    () => summarizeInvoiceFinancialRows(filteredRows),
+    [filteredRows],
   );
 
-  const totalRevenue = filteredPayments.reduce((s, p) => s + p.amountPaid, 0);
-  const totalDue = filteredInvoices.reduce((s, i) => s + i.amountDue, 0);
-  const totalOutstanding = filteredInvoices.reduce((s, i) => s + (i.amountDue - i.amountPaid), 0);
+  const customerById = useMemo(
+    () => new Map(customers.map((customer) => [customer.id, customer.fullName])),
+    [customers],
+  );
+  const paymentsByInvoice = useMemo(() => {
+    const grouped = new Map<string, typeof payments>();
+    for (const payment of payments) {
+      if (effectivePaymentAmount(payment) <= 0) continue;
+      const invoicePayments = grouped.get(payment.invoiceId) || [];
+      invoicePayments.push(payment);
+      grouped.set(payment.invoiceId, invoicePayments);
+    }
+    for (const invoicePayments of grouped.values()) {
+      invoicePayments.sort(
+        (a, b) => new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime(),
+      );
+    }
+    return grouped;
+  }, [payments]);
+  const detailRows = useMemo(
+    () => [...filteredRows].sort(
+      (a, b) => new Date(b.invoice.dueDate).getTime() - new Date(a.invoice.dueDate).getTime(),
+    ),
+    [filteredRows],
+  );
+
+  const paymentDatesForInvoice = (invoiceId?: string) =>
+    (paymentsByInvoice.get(invoiceId || '') || [])
+      .map((payment) => fmtDate(payment.paymentDate))
+      .join('، ') || '—';
+
+  const paymentMethodsForInvoice = (invoiceId?: string) =>
+    [...new Set(
+      (paymentsByInvoice.get(invoiceId || '') || [])
+        .map((payment) => AR.payment.methods[payment.paymentMethod]),
+    )].join('، ') || '—';
+
+  const referencesForInvoice = (invoiceId?: string) =>
+    [...new Set(
+      (paymentsByInvoice.get(invoiceId || '') || [])
+        .map((payment) => payment.referenceNumber)
+        .filter(Boolean),
+    )].join('، ') || '—';
+
+  const selectedCustomerName = customerId === 'all'
+    ? 'كل العملاء'
+    : customerById.get(customerId) || '—';
+  const settlementLabel = settlement === 'paid'
+    ? 'مسدد'
+    : settlement === 'unpaid'
+      ? 'غير مسدد'
+      : 'الكل';
 
   const trend = useMemo(() => {
     const months: Record<string, { name: string; إيرادات: number; مستحق: number }> = {};
-    for (const p of filteredPayments) {
-      const key = format(new Date(p.paymentDate), 'yyyy-MM');
-      const name = format(new Date(p.paymentDate), 'MMM yy', { locale: ar });
+    for (const row of filteredRows) {
+      const dueDate = new Date(row.invoice.dueDate);
+      const key = format(dueDate, 'yyyy-MM');
+      const name = format(dueDate, 'MMM yy', { locale: ar });
       months[key] ||= { name, إيرادات: 0, مستحق: 0 };
-      months[key].إيرادات += p.amountPaid;
+      months[key].إيرادات += row.paid;
+      months[key].مستحق += row.invoice.amountDue;
     }
-    for (const i of filteredInvoices) {
-      const key = format(new Date(i.dueDate), 'yyyy-MM');
-      const name = format(new Date(i.dueDate), 'MMM yy', { locale: ar });
-      months[key] ||= { name, إيرادات: 0, مستحق: 0 };
-      months[key].مستحق += i.amountDue;
-    }
-    return Object.entries(months).sort(([a], [b]) => (a < b ? -1 : 1)).map(([, v]) => v);
-  }, [filteredPayments, filteredInvoices]);
+    return Object.entries(months)
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([, value]) => value);
+  }, [filteredRows]);
 
   const exportPdf = async () => {
     try {
       await generateArabicPDF({
         title: 'التقرير المالي الشامل',
-        subtitle: `الفترة: ${fmtDate(fromD)} — ${fmtDate(toD)}`,
+        subtitle: `فترة الاستحقاق: ${fmtDate(fromD)} — ${fmtDate(toD)} · العميل: ${selectedCustomerName} · الحالة: ${settlementLabel}`,
         companyName: settings?.companyName,
         logoBase64: settings?.logoBase64,
         sections: [
@@ -79,14 +143,27 @@ export default function FinancialReport() {
             },
           },
           {
-            heading: 'تفاصيل المدفوعات',
+            heading: 'تفاصيل الاستحقاقات والمدفوعات',
             table: {
-              headers: [AR.payment.paymentDate, AR.payment.amountPaid, AR.payment.paymentMethod, AR.payment.referenceNumber],
-              rows: filteredPayments.map((p) => [
-                fmtDate(p.paymentDate),
-                fmtMoney(p.amountPaid),
-                AR.payment.methods[p.paymentMethod],
-                p.referenceNumber || '—',
+              headers: [
+                AR.invoice.dueDate,
+                AR.payment.paymentDate,
+                'اسم العميل',
+                AR.invoice.number,
+                AR.invoice.amountDue,
+                AR.invoice.amountPaid,
+                AR.invoice.balance,
+                AR.invoice.status,
+              ],
+              rows: detailRows.map((row) => [
+                fmtDate(row.invoice.dueDate),
+                paymentDatesForInvoice(row.invoice.id),
+                customerById.get(row.invoice.customerId) || '—',
+                row.invoice.invoiceNumber,
+                fmtMoney(row.invoice.amountDue),
+                fmtMoney(row.paid),
+                fmtMoney(row.balance),
+                AR.invoice.statuses[row.computedStatus],
               ]),
             },
           },
@@ -94,21 +171,40 @@ export default function FinancialReport() {
         filename: `تقرير_مالي_${from}_${to}.pdf`,
       });
       toast.success('تم إنشاء التقرير');
-    } catch (e: any) { toast.error('تعذّر إنشاء PDF: ' + (e.message || '')); }
+    } catch (error: any) {
+      toast.error('تعذّر إنشاء PDF: ' + (error.message || ''));
+    }
   };
 
   const exportExcel = () => {
     exportToExcel({
       filename: `تقرير_مالي_${from}_${to}`,
       sheetName: 'التقرير المالي',
-      headers: [AR.payment.paymentDate, AR.payment.amountPaid, AR.payment.paymentMethod, AR.payment.referenceNumber],
-      rows: filteredPayments.map((p) => [
-        p.paymentDate instanceof Date ? p.paymentDate : new Date(p.paymentDate),
-        p.amountPaid,
-        AR.payment.methods[p.paymentMethod],
-        p.referenceNumber || '',
+      headers: [
+        AR.invoice.dueDate,
+        AR.payment.paymentDate,
+        'اسم العميل',
+        AR.invoice.number,
+        AR.invoice.amountDue,
+        AR.invoice.amountPaid,
+        AR.invoice.balance,
+        AR.invoice.status,
+        AR.payment.paymentMethod,
+        AR.payment.referenceNumber,
+      ],
+      rows: detailRows.map((row) => [
+        row.invoice.dueDate instanceof Date ? row.invoice.dueDate : new Date(row.invoice.dueDate),
+        paymentDatesForInvoice(row.invoice.id),
+        customerById.get(row.invoice.customerId) || '—',
+        row.invoice.invoiceNumber,
+        row.invoice.amountDue,
+        row.paid,
+        row.balance,
+        AR.invoice.statuses[row.computedStatus],
+        paymentMethodsForInvoice(row.invoice.id),
+        referencesForInvoice(row.invoice.id),
       ]),
-      columnWidths: [16, 14, 20, 18],
+      columnWidths: [16, 22, 26, 18, 16, 16, 16, 16, 22, 20],
     });
     toast.success('تم تصدير ملف إكسل');
   };
@@ -119,11 +215,13 @@ export default function FinancialReport() {
         <h2 className="text-2xl font-bold flex items-center gap-2">
           <BarChart3 className="h-6 w-6" /> {AR.reports.financialTitle}
         </h2>
-        <p className="text-sm text-muted-foreground mt-1">تحليل مالي مفصل قابل للتصدير — الإيرادات والاستحقاقات خلال الفترة.</p>
+        <p className="text-sm text-muted-foreground mt-1">
+          تحليل مالي حسب فترة استحقاق الفواتير — إجمالي المستحقات يساوي الإيرادات المحصلة مضافاً إليها المتبقي.
+        </p>
       </div>
 
       <Card className="glass border-0">
-        <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-6">
+        <CardContent className="grid grid-cols-1 md:grid-cols-6 gap-3 pt-6">
           <div className="space-y-1.5">
             <Label className="text-xs">{AR.common.from}</Label>
             <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} data-testid="report-from-input" />
@@ -131,6 +229,29 @@ export default function FinancialReport() {
           <div className="space-y-1.5">
             <Label className="text-xs">{AR.common.to}</Label>
             <Input type="date" value={to} onChange={(e) => setTo(e.target.value)} data-testid="report-to-input" />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">اسم العميل</Label>
+            <Select value={customerId} onValueChange={setCustomerId}>
+              <SelectTrigger data-testid="report-customer-filter"><SelectValue /></SelectTrigger>
+              <SelectContent className="max-h-64 overflow-y-scroll">
+                <SelectItem value="all">كل العملاء</SelectItem>
+                {customers.map((customer) => (
+                  <SelectItem key={customer.id} value={customer.id!}>{customer.fullName}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">حالة السداد</Label>
+            <Select value={settlement} onValueChange={(value) => setSettlement(value as SettlementFilter)}>
+              <SelectTrigger data-testid="report-settlement-filter"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">الكل</SelectItem>
+                <SelectItem value="paid">مسدد</SelectItem>
+                <SelectItem value="unpaid">غير مسدد</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <div className="md:col-span-2 flex items-end gap-2 justify-end">
             <Button variant="outline" onClick={exportExcel} data-testid="report-excel-button">{AR.actions.exportExcel}</Button>
@@ -178,27 +299,39 @@ export default function FinancialReport() {
       </Card>
 
       <Card className="glass border-0 overflow-hidden">
-        <CardHeader><CardTitle className="text-base">تفاصيل المدفوعات</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">تفاصيل الاستحقاقات والمدفوعات</CardTitle></CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>{AR.invoice.dueDate}</TableHead>
                   <TableHead>{AR.payment.paymentDate}</TableHead>
-                  <TableHead>{AR.payment.amountPaid}</TableHead>
+                  <TableHead>اسم العميل</TableHead>
+                  <TableHead>{AR.invoice.number}</TableHead>
+                  <TableHead>{AR.invoice.amountDue}</TableHead>
+                  <TableHead>{AR.invoice.amountPaid}</TableHead>
+                  <TableHead>{AR.invoice.balance}</TableHead>
+                  <TableHead>{AR.invoice.status}</TableHead>
                   <TableHead>{AR.payment.paymentMethod}</TableHead>
                   <TableHead>{AR.payment.referenceNumber}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredPayments.length === 0 ? (
-                  <TableRow><TableCell colSpan={4} className="text-center py-8 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
-                ) : filteredPayments.map((p) => (
-                  <TableRow key={p.id}>
-                    <TableCell>{fmtDate(p.paymentDate)}</TableCell>
-                    <TableCell className="num">{fmtMoney(p.amountPaid)}</TableCell>
-                    <TableCell>{AR.payment.methods[p.paymentMethod]}</TableCell>
-                    <TableCell className="num text-xs">{p.referenceNumber || '—'}</TableCell>
+                {detailRows.length === 0 ? (
+                  <TableRow><TableCell colSpan={10} className="text-center py-8 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
+                ) : detailRows.map((row) => (
+                  <TableRow key={row.invoice.id} data-testid="financial-detail-row">
+                    <TableCell>{fmtDate(row.invoice.dueDate)}</TableCell>
+                    <TableCell>{paymentDatesForInvoice(row.invoice.id)}</TableCell>
+                    <TableCell>{customerById.get(row.invoice.customerId) || '—'}</TableCell>
+                    <TableCell className="num font-semibold">{row.invoice.invoiceNumber}</TableCell>
+                    <TableCell className="num">{fmtMoney(row.invoice.amountDue)}</TableCell>
+                    <TableCell className="num text-success">{fmtMoney(row.paid)}</TableCell>
+                    <TableCell className="num text-warning">{fmtMoney(row.balance)}</TableCell>
+                    <TableCell>{AR.invoice.statuses[row.computedStatus]}</TableCell>
+                    <TableCell>{paymentMethodsForInvoice(row.invoice.id)}</TableCell>
+                    <TableCell className="num text-xs">{referencesForInvoice(row.invoice.id)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
