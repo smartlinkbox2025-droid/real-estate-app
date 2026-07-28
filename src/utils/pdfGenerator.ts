@@ -96,18 +96,23 @@ const RECEIPT_LAYOUT = {
 };
 
 // ─── مساعدات ──────────────────────────────────────────────────────────────────
-function hr(color: string = C.hairline, weight = 0.5, margin: [number,number,number,number] = [0,0,0,14]): any {
+function hr(
+  color: string = C.hairline,
+  weight = 0.5,
+  margin: [number,number,number,number] = [0,0,0,14],
+  width = 515,
+): any {
   return {
-    canvas: [{ type: 'line', x1: 0, y1: 0, x2: 515, y2: 0, lineWidth: weight, lineColor: color }],
+    canvas: [{ type: 'line', x1: 0, y1: 0, x2: width, y2: 0, lineWidth: weight, lineColor: color }],
     margin,
   };
 }
 
 /** شريط ذهبي في أعلى الصفحة */
-function topBand(): any {
+function topBand(width = 595, horizontalMargin = 40): any {
   return {
-    canvas: [{ type: 'rect', x: 0, y: 0, w: 595, h: 6, color: C.gold }],
-    margin: [-40, -40, -40, 20],
+    canvas: [{ type: 'rect', x: 0, y: 0, w: width, h: 6, color: C.gold }],
+    margin: [-horizontalMargin, -horizontalMargin, -horizontalMargin, 20],
   };
 }
 
@@ -245,6 +250,7 @@ export interface PDFOptions {
   filename?: string;
   companyName?: string;
   logoBase64?: string;
+  pageOrientation?: 'portrait' | 'landscape';
 }
 
 export async function generateArabicPDF(opts: PDFOptions): Promise<void> {
@@ -252,12 +258,19 @@ export async function generateArabicPDF(opts: PDFOptions): Promise<void> {
     title, subtitle, sections,
     filename = 'تقرير.pdf',
     companyName, logoBase64,
+    pageOrientation = 'portrait',
   } = opts;
+  const isLandscape = pageOrientation === 'landscape';
+  const pageMargins = isLandscape
+    ? [28, 32, 28, 52]
+    : [40, 40, 40, 56];
+  const pageWidth = isLandscape ? 842 : 595;
+  const contentWidth = pageWidth - pageMargins[0] - pageMargins[2];
 
   const content: any[] = [
-    topBand(),
+    topBand(pageWidth, pageMargins[0]),
     buildDocHeader({ title, subtitle, companyName, logoBase64 }),
-    hr(C.gold, 2, [0, 0, 0, 16]),
+    hr(C.gold, 2, [0, 0, 0, 16], contentWidth),
   ];
 
   for (const sec of sections) {
@@ -268,7 +281,7 @@ export async function generateArabicPDF(opts: PDFOptions): Promise<void> {
         alignment: 'right',
         margin: [0, 10, 0, 6],
       });
-      content.push(hr(C.navy, 1, [0, 0, 0, 8]));
+      content.push(hr(C.navy, 1, [0, 0, 0, 8], contentWidth));
     }
     if (sec.text) {
       content.push({
@@ -285,7 +298,7 @@ export async function generateArabicPDF(opts: PDFOptions): Promise<void> {
 
   // تذييل نهاية المستند
   content.push(
-    hr(C.hairline, 0.4, [0, 20, 0, 6]),
+    hr(C.hairline, 0.4, [0, 20, 0, 6], contentWidth),
     {
       text: ar(`تم الإنشاء تلقائياً بتاريخ ${new Date().toLocaleDateString('en-SA')}`),
       style: 'footer',
@@ -296,7 +309,8 @@ export async function generateArabicPDF(opts: PDFOptions): Promise<void> {
   await download(
     {
       pageSize:     'A4',
-      pageMargins:  [40, 40, 40, 56],
+      pageOrientation,
+      pageMargins,
       defaultStyle: { font: 'Cairo', fontSize: 10.5, lineHeight: 1.5, alignment: 'right' },
       styles:       STYLES,
       content,

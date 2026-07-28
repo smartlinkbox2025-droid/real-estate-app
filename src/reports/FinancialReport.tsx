@@ -125,6 +125,7 @@ export default function FinancialReport() {
         subtitle: `فترة التقرير: ${fmtDate(fromD)} — ${fmtDate(toD)} · العميل: ${selectedCustomerName} · الحالة: ${settlementLabel}`,
         companyName: settings?.companyName,
         logoBase64: settings?.logoBase64,
+        pageOrientation: 'landscape',
         sections: [
           {
             heading: 'الملخص التنفيذي',
