@@ -81,3 +81,14 @@ export function summarizeInvoiceFinancialRows(rows: InvoiceFinancialRow[]) {
   const totalOutstanding = roundCurrency(Math.max(0, totalDue - totalRevenue));
   return { totalRevenue, totalDue, totalOutstanding };
 }
+
+export function summarizeInvoiceFinancialPeriod(
+  rows: InvoiceFinancialRow[],
+  options: Parameters<typeof filterInvoiceFinancialRows>[1],
+) {
+  const filteredRows = filterInvoiceFinancialRows(rows, options);
+  return {
+    rows: filteredRows,
+    ...summarizeInvoiceFinancialRows(filteredRows),
+  };
+}

@@ -154,19 +154,19 @@ export default function Contracts() {
           <h2 className="text-2xl font-bold flex items-center gap-2"><FileText className="h-6 w-6" /> {AR.nav.contracts}</h2>
           <p className="text-sm text-muted-foreground mt-1">إبرام العقود مع توليد الأقساط والفواتير آلياً.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap">
           <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
-            <SelectTrigger className="w-40" data-testid="contract-status-filter"><SelectValue placeholder={AR.contract.status} /></SelectTrigger>
+            <SelectTrigger className="col-span-2 w-full sm:w-40" data-testid="contract-status-filter"><SelectValue placeholder={AR.contract.status} /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">{AR.actions.all}</SelectItem>
               {(Object.keys(AR.contract.statuses) as ContractStatus[]).map((k) => <SelectItem key={k} value={k}>{AR.contract.statuses[k]}</SelectItem>)}
             </SelectContent>
           </Select>
-          <Button variant="outline" onClick={exportExcel}>{AR.actions.exportExcel}</Button>
-          <Button variant="outline" onClick={exportPdf} className="gap-1.5" data-testid="export-contracts-pdf">
+          <Button variant="outline" onClick={exportExcel} className="w-full sm:w-auto">{AR.actions.exportExcel}</Button>
+          <Button variant="outline" onClick={exportPdf} className="w-full gap-1.5 sm:w-auto" data-testid="export-contracts-pdf">
             <FileDown className="h-4 w-4" /> PDF
           </Button>
-          <Button onClick={() => setDialogOpen(true)} data-testid="add-contract-button" className="gap-1.5">
+          <Button onClick={() => setDialogOpen(true)} data-testid="add-contract-button" className="col-span-2 w-full gap-1.5 sm:w-auto">
             <Plus className="h-4 w-4" /> {AR.contract.addNew}
           </Button>
         </div>
@@ -174,7 +174,7 @@ export default function Contracts() {
 
       <Card className="glass border-0 overflow-hidden">
         <div className="overflow-x-auto">
-          <Table>
+          <Table className="min-w-[56rem]">
             <TableHeader>
               <TableRow>
                 <TableHead>{AR.contract.property}</TableHead>

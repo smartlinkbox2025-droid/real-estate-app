@@ -38,10 +38,14 @@ export default function DataEngine() {
     try {
       const reader = new FileReader();
       reader.onload = async () => {
-        const text = String(reader.result);
-        const result = await importBackup(text);
-        if (result.ok) toast.success(result.message);
-        else toast.error(result.message);
+        try {
+          const text = String(reader.result);
+          const result = await importBackup(text);
+          if (result.ok) toast.success(result.message);
+          else toast.error(result.message);
+        } catch {
+          toast.error('تعذّر استيراد النسخة الاحتياطية، ولم يتم تغيير البيانات الحالية');
+        }
       };
       reader.onerror = () => toast.error('تعذّر قراءة الملف');
       reader.readAsText(file);

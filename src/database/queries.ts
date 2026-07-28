@@ -1,4 +1,5 @@
 import { db } from './db';
+import { validateBackupPayload } from '../utils/backupValidation';
 import { v4 as uuid } from 'uuid';
 import type {
   Property, Customer, Contract, Invoice, Payment, DocumentFile,
@@ -334,39 +335,45 @@ export async function exportBackup(): Promise<Blob> {
 export async function importBackup(json: string): Promise<{ ok: boolean; message: string }> {
   let data: any;
   try { data = JSON.parse(json); } catch { return { ok: false, message: 'الملف تالف أو غير صالح' }; }
-  const requiredKeys = ['properties', 'customers', 'contracts', 'invoices', 'payments'];
-  for (const k of requiredKeys) {
-    if (!(k in data)) return { ok: false, message: `الملف ينقصه الجدول: ${k}` };
-  }
+  const validation = validateBackupPayload(data);
+  if (!validation.ok) return { ok: false, message: validation.message };
   const revive = <T extends Record<string, any>>(arr: T[], dateFields: string[]) =>
     (arr || []).map((r) => {
       const clone: any = { ...r };
       for (const f of dateFields) { if (clone[f]) clone[f] = new Date(clone[f]); }
       return clone as T;
     });
-  await db.transaction('rw',
-    [db.properties, db.customers, db.contracts, db.payments, db.invoices,
-     db.documents, db.notifications, db.activityLogs, db.settings, db.maintenance, db.tasks],
-    async () => {
-      await Promise.all([
-        db.properties.clear(), db.customers.clear(), db.contracts.clear(),
-        db.payments.clear(), db.invoices.clear(), db.documents.clear(),
-        db.notifications.clear(), db.activityLogs.clear(), db.maintenance.clear(), db.tasks.clear(),
-      ]);
-      if (data.properties?.length) await db.properties.bulkAdd(revive(data.properties, ['createdAt', 'updatedAt']));
-      if (data.customers?.length) await db.customers.bulkAdd(revive(data.customers, ['createdAt']));
-      if (data.contracts?.length) await db.contracts.bulkAdd(revive(data.contracts, ['startDate', 'endDate', 'createdAt']));
-      if (data.payments?.length) await db.payments.bulkAdd(revive(data.payments, ['paymentDate']));
-      if (data.invoices?.length) await db.invoices.bulkAdd(revive(data.invoices, ['dueDate', 'createdAt']));
-      if (data.documents?.length) await db.documents.bulkAdd(revive(data.documents, ['uploadedAt']));
-      if (data.notifications?.length) await db.notifications.bulkAdd(revive(data.notifications, ['triggerDate']));
-      if (data.activityLogs?.length) await db.activityLogs.bulkAdd(revive(data.activityLogs, ['timestamp']));
-      if (data.maintenance?.length) await db.maintenance.bulkAdd(revive(data.maintenance, ['scheduledDate', 'completedDate', 'createdAt', 'updatedAt']));
-      if (data.tasks?.length) await db.tasks.bulkAdd(revive(data.tasks, ['dueDate', 'createdAt', 'updatedAt']));
-      if (data.settings?.length) { for (const s of data.settings) await db.settings.put(s); }
-    }
-  );
-  return { ok: true, message: 'تم استيراد النسخة الاحتياطية بنجاح' };
+  try {
+    await db.transaction('rw',
+      [db.properties, db.customers, db.contracts, db.payments, db.invoices,
+       db.documents, db.notifications, db.activityLogs, db.settings, db.maintenance, db.tasks],
+      async () => {
+        await Promise.all([
+          db.properties.clear(), db.customers.clear(), db.contracts.clear(),
+          db.payments.clear(), db.invoices.clear(), db.documents.clear(),
+          db.notifications.clear(), db.activityLogs.clear(), db.maintenance.clear(), db.tasks.clear(),
+        ]);
+        if (data.properties?.length) await db.properties.bulkAdd(revive(data.properties, ['createdAt', 'updatedAt']));
+        if (data.customers?.length) await db.customers.bulkAdd(revive(data.customers, ['createdAt']));
+        if (data.contracts?.length) await db.contracts.bulkAdd(revive(data.contracts, ['startDate', 'endDate', 'createdAt']));
+        if (data.payments?.length) await db.payments.bulkAdd(revive(data.payments, ['paymentDate']));
+        if (data.invoices?.length) await db.invoices.bulkAdd(revive(data.invoices, ['dueDate', 'createdAt']));
+        if (data.documents?.length) await db.documents.bulkAdd(revive(data.documents, ['uploadedAt']));
+        if (data.notifications?.length) await db.notifications.bulkAdd(revive(data.notifications, ['triggerDate']));
+        if (data.activityLogs?.length) await db.activityLogs.bulkAdd(revive(data.activityLogs, ['timestamp']));
+        if (data.maintenance?.length) await db.maintenance.bulkAdd(revive(data.maintenance, ['scheduledDate', 'completedDate', 'createdAt', 'updatedAt']));
+        if (data.tasks?.length) await db.tasks.bulkAdd(revive(data.tasks, ['dueDate', 'createdAt', 'updatedAt']));
+        if (data.settings?.length) { for (const s of data.settings) await db.settings.put(s); }
+      }
+    );
+  } catch (error: any) {
+    const reason = error?.name === 'QuotaExceededError'
+      ? 'المساحة المتاحة في المتصفح غير كافية'
+      : 'تعذّر استيراد البيانات، ولم يتم تغيير البيانات الحالية';
+    return { ok: false, message: reason };
+  }
+  const warning = validation.warnings.length ? ` — ${validation.warnings.join(' — ')}` : '';
+  return { ok: true, message: `تم استيراد النسخة الاحتياطية بنجاح${warning}` };
 }
 
 export async function resetDatabase(): Promise<void> {

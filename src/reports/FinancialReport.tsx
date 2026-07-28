@@ -6,8 +6,7 @@ import { fmtDate, fmtMoney, toISODate } from '../utils/dateHelpers';
 import {
   buildInvoiceFinancialRows,
   effectivePaymentAmount,
-  filterInvoiceFinancialRows,
-  summarizeInvoiceFinancialRows,
+  summarizeInvoiceFinancialPeriod,
   type SettlementFilter,
 } from '../utils/financialCalculations';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -46,14 +45,16 @@ export default function FinancialReport() {
     () => buildInvoiceFinancialRows(invoices, payments),
     [invoices, payments],
   );
-  const filteredRows = useMemo(
-    () => filterInvoiceFinancialRows(allRows, { from: fromD, to: toD, customerId, settlement }),
+  const periodSummary = useMemo(
+    () => summarizeInvoiceFinancialPeriod(allRows, { from: fromD, to: toD, customerId, settlement }),
     [allRows, from, to, customerId, settlement],
   );
-  const { totalRevenue, totalDue, totalOutstanding } = useMemo(
-    () => summarizeInvoiceFinancialRows(filteredRows),
-    [filteredRows],
-  );
+  const {
+    rows: filteredRows,
+    totalRevenue,
+    totalDue,
+    totalOutstanding,
+  } = periodSummary;
 
   const customerById = useMemo(
     () => new Map(customers.map((customer) => [customer.id, customer.fullName])),

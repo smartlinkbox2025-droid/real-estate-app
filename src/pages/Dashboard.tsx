@@ -13,14 +13,14 @@ import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, PieChart, Pie, Cell, Legend,
 } from 'recharts';
-import { format, startOfMonth, subMonths, isSameMonth } from 'date-fns';
+import { endOfMonth, format, startOfMonth, subMonths } from 'date-fns';
 import { ar } from 'date-fns/locale';
 import { generateArabicPDF } from '../utils/pdfGenerator';
 import { exportToExcel } from '../utils/excelExporter';
 import { toast } from 'sonner';
 import {
   buildInvoiceFinancialRows,
-  effectivePaymentAmount,
+  summarizeInvoiceFinancialPeriod,
   summarizeInvoiceFinancialRows,
 } from '../utils/financialCalculations';
 
@@ -60,23 +60,25 @@ export default function Dashboard() {
 
   const monthlyIncome = useMemo(() => {
     const now = new Date();
-    return payments
-      .filter((p) => isSameMonth(new Date(p.paymentDate), now))
-      .reduce((s, p) => s + effectivePaymentAmount(p), 0);
-  }, [payments]);
+    return summarizeInvoiceFinancialPeriod(financialRows, {
+      from: startOfMonth(now),
+      to: endOfMonth(now),
+    }).totalRevenue;
+  }, [financialRows]);
 
   const revenueData = useMemo(() => {
     const months: { name: string; إيرادات: number }[] = [];
     for (let i = 5; i >= 0; i--) {
       const m = startOfMonth(subMonths(new Date(), i));
       const label = format(m, 'MMM', { locale: ar });
-      const revenue = payments
-        .filter((p) => isSameMonth(new Date(p.paymentDate), m))
-        .reduce((s, p) => s + effectivePaymentAmount(p), 0);
-      months.push({ name: label, إيرادات: Math.round(revenue) });
+      const revenue = summarizeInvoiceFinancialPeriod(financialRows, {
+        from: startOfMonth(m),
+        to: endOfMonth(m),
+      }).totalRevenue;
+      months.push({ name: label, إيرادات: revenue });
     }
     return months;
-  }, [payments]);
+  }, [financialRows]);
 
   const distribution = useMemo(() => {
     const map: Record<string, number> = {};
