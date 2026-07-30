@@ -88,18 +88,24 @@ export default function Contracts() {
         subtitle: `${filtered.length} عقد`,
         companyName: settings?.companyName,
         logoBase64: settings?.logoBase64,
+        pageOrientation: 'landscape',
         filename: `العقود_${new Date().toISOString().slice(0, 10)}.pdf`,
         sections: [{
           table: {
-            headers: ['رقم العقد', 'العقار', 'العميل', 'نوع العقد', 'تاريخ البداية', 'تاريخ النهاية', 'القيمة الكلية', 'دورية الدفع', 'الحالة'],
+            headers: ['رقم العقد', 'العقار', 'العميل', 'نوع العقد', 'تاريخ البداية', 'تاريخ النهاية', 'القيمة الكلية', 'الرصيد المتبقي', 'دورية الدفع', 'الحالة'],
             rows: filtered.map((c) => [
               contractNumber(c), propName(c.propertyId, c.unitId), custName(c.customerId),
               AR.contract.types[c.contractType],
               fmtDate(c.startDate), fmtDate(c.endDate),
               fmtMoney(c.totalAmount),
+              fmtMoney(c.remainingBalance),
               AR.contract.frequencies[c.paymentFrequency],
               AR.contract.statuses[c.status],
             ]),
+            widths: [82, '*', '*', 44, 60, 60, 68, 68, 52, 38],
+            headerFontSize: 8.3,
+            cellFontSize: 8.5,
+            cellPadding: 4,
           },
         }],
       });

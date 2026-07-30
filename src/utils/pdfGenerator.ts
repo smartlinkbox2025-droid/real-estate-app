@@ -167,14 +167,33 @@ function buildDocHeader(opts: {
 }
 
 /** بناء جدول كامل مع صف رأس ملوّن — الأعمدة مقلوبة لاتجاه RTL */
-function tableBlock(headers: string[], rows: (string | number)[][]): any {
+function tableBlock(
+  headers: string[],
+  rows: (string | number)[][],
+  options?: {
+    widths?: Array<number | string>;
+    headerFontSize?: number;
+    cellFontSize?: number;
+    cellPadding?: number;
+  },
+): any {
   const safeRows = rows.length ? rows : [Array(headers.length).fill('—')];
 
   // عكس ترتيب الأعمدة حتى يظهر العمود الأول على اليمين (RTL)
   const rHeaders = [...headers].reverse();
   const rRows    = safeRows.map((row) => [...row].reverse());
 
-  const widths = Array(headers.length).fill('*');
+  const widths = options?.widths?.length === headers.length
+    ? [...options.widths].reverse()
+    : Array(headers.length).fill('*');
+  const cellPadding = options?.cellPadding;
+  const layout = cellPadding === undefined
+    ? TABLE_LAYOUT
+    : {
+        ...TABLE_LAYOUT,
+        paddingLeft: () => cellPadding,
+        paddingRight: () => cellPadding,
+      };
 
   return {
     table: {
@@ -184,6 +203,7 @@ function tableBlock(headers: string[], rows: (string | number)[][]): any {
         rHeaders.map((h) => ({
           text: ar(h),
           style: 'tableHeader',
+          fontSize: options?.headerFontSize,
           alignment: 'right',
           margin: [4, 0, 4, 0],
         })),
@@ -191,12 +211,13 @@ function tableBlock(headers: string[], rows: (string | number)[][]): any {
           row.map((cell) => ({
             text: ar(cell),
             style: 'tableCell',
+            fontSize: options?.cellFontSize,
             alignment: 'right',
           }))
         ),
       ],
     },
-    layout: TABLE_LAYOUT,
+    layout,
     margin: [0, 0, 0, 14],
   };
 }
@@ -241,7 +262,14 @@ function download(docDef: any, filename: string): Promise<void> {
 export interface Section {
   heading?: string;
   text?: string;
-  table?: { headers: string[]; rows: (string | number)[][] };
+  table?: {
+    headers: string[];
+    rows: (string | number)[][];
+    widths?: Array<number | string>;
+    headerFontSize?: number;
+    cellFontSize?: number;
+    cellPadding?: number;
+  };
 }
 
 export interface PDFOptions {
@@ -293,7 +321,7 @@ export async function generateArabicPDF(opts: PDFOptions): Promise<void> {
       });
     }
     if (sec.table) {
-      content.push(tableBlock(sec.table.headers, sec.table.rows));
+      content.push(tableBlock(sec.table.headers, sec.table.rows, sec.table));
     }
   }
 
