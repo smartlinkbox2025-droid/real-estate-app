@@ -13,11 +13,14 @@ import { FolderOpen, Download, Trash2, Upload, Search, File, FileImage, FileText
 import { toast } from 'sonner';
 import { uploadDocument, downloadDocument } from '../database/queries';
 import type { DocumentRelated } from '../models/types';
+import { documentMatchesCustomerName, getDocumentCustomerNames } from '../utils/documentCustomers';
+import { getContractDisplayNumber } from '../utils/contractNumbers';
 
 const RELATED_LABELS: Record<DocumentRelated, string> = {
   property: 'عقار',
   contract: 'عقد',
   customer: 'عميل',
+  payment: 'سداد',
 };
 
 function FileIcon({ type }: { type: string }) {
@@ -31,6 +34,8 @@ export default function Documents() {
   const properties  = useLiveQuery(() => db.properties.toArray(), []) || [];
   const contracts   = useLiveQuery(() => db.contracts.toArray(), []) || [];
   const customers   = useLiveQuery(() => db.customers.toArray(), []) || [];
+  const payments    = useLiveQuery(() => db.payments.orderBy('paymentDate').reverse().toArray(), []) || [];
+  const invoices    = useLiveQuery(() => db.invoices.toArray(), []) || [];
 
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | DocumentRelated>('all');
@@ -40,25 +45,44 @@ export default function Documents() {
 
   const relatedOptions = useMemo(() => {
     if (selectedRelatedType === 'property') return properties.map((p) => ({ id: p.id!, label: p.name }));
-    if (selectedRelatedType === 'contract')  return contracts.map((c) => ({ id: c.id!, label: `عقد ${c.id?.slice(-6)}` }));
+    if (selectedRelatedType === 'contract')  return contracts.map((c) => ({ id: c.id!, label: `عقد ${getContractDisplayNumber(c, contracts)}` }));
     if (selectedRelatedType === 'customer')  return customers.map((c) => ({ id: c.id!, label: c.fullName }));
+    if (selectedRelatedType === 'payment') return payments.map((payment) => ({
+      id: payment.id!,
+      label: `${invoices.find((invoice) => invoice.id === payment.invoiceId)?.invoiceNumber || 'سداد'} - ${fmtDate(payment.paymentDate)}`,
+    }));
     return [];
-  }, [selectedRelatedType, properties, contracts, customers]);
+  }, [selectedRelatedType, properties, contracts, customers, payments, invoices]);
 
   const related = (doc: typeof docs[0]) => {
     if (doc.relatedType === 'property') return properties.find((p) => p.id === doc.relatedId)?.name || '—';
-    if (doc.relatedType === 'contract') return `عقد ${doc.relatedId.slice(-6)}`;
+    if (doc.relatedType === 'contract') {
+      const contract = contracts.find((item) => item.id === doc.relatedId);
+      return contract ? `عقد ${getContractDisplayNumber(contract, contracts)}` : `عقد ${doc.relatedId.slice(-6)}`;
+    }
     if (doc.relatedType === 'customer') return customers.find((c) => c.id === doc.relatedId)?.fullName || '—';
+    if (doc.relatedType === 'payment') {
+      const payment = payments.find((item) => item.id === doc.relatedId);
+      const invoice = invoices.find((item) => item.id === payment?.invoiceId);
+      return invoice ? `سداد ${invoice.invoiceNumber}` : `سداد ${doc.relatedId.slice(-6)}`;
+    }
     return '—';
   };
+
+  const customerNames = (doc: typeof docs[0]) => getDocumentCustomerNames(doc, {
+    customers,
+    contracts,
+    invoices,
+    payments,
+  });
 
   const filtered = useMemo(() => {
     return docs.filter((d) => {
       if (typeFilter !== 'all' && d.relatedType !== typeFilter) return false;
-      if (search && !d.fileName.toLowerCase().includes(search.toLowerCase())) return false;
+      if (!documentMatchesCustomerName(d, search, { customers, contracts, invoices, payments })) return false;
       return true;
     });
-  }, [docs, typeFilter, search]);
+  }, [docs, typeFilter, search, customers, contracts, invoices, payments]);
 
   const onUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -121,7 +145,13 @@ export default function Documents() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="relative">
             <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input placeholder="ابحث باسم الملف…" value={search} onChange={(e) => setSearch(e.target.value)} className="pr-9" />
+            <Input
+              placeholder="ابحث باسم العميل…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pr-9"
+              data-testid="documents-customer-search-input"
+            />
           </div>
           <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as any)}>
             <SelectTrigger><SelectValue placeholder="نوع السجل" /></SelectTrigger>
@@ -141,6 +171,7 @@ export default function Documents() {
               <TableRow>
                 <TableHead>الملف</TableHead>
                 <TableHead>نوع السجل</TableHead>
+                <TableHead>اسم العميل</TableHead>
                 <TableHead>مرتبط بـ</TableHead>
                 <TableHead>تاريخ الرفع</TableHead>
                 <TableHead className="text-left">{AR.actions.view}</TableHead>
@@ -148,7 +179,7 @@ export default function Documents() {
             </TableHeader>
             <TableBody>
               {filtered.length === 0 ? (
-                <TableRow><TableCell colSpan={5} className="text-center py-10 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
+                <TableRow><TableCell colSpan={6} className="text-center py-10 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
               ) : filtered.map((doc) => (
                 <TableRow key={doc.id} data-testid={`doc-row-${doc.id}`}>
                   <TableCell>
@@ -160,6 +191,7 @@ export default function Documents() {
                   <TableCell>
                     <Badge variant="outline" className="text-xs">{RELATED_LABELS[doc.relatedType]}</Badge>
                   </TableCell>
+                  <TableCell className="text-sm">{customerNames(doc).join('، ') || '—'}</TableCell>
                   <TableCell className="text-sm">{related(doc)}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{fmtRelative(doc.uploadedAt)}</TableCell>
                   <TableCell>

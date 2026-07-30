@@ -38,8 +38,41 @@ export function daysBetween(a: Date | string, b: Date | string): number {
   return differenceInDays(db, da);
 }
 
-export function fmtMoney(v: number, currency = 'SAR'): string {
-  const symbol = currency === 'SAR' ? 'ر.س' : currency;
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  SAR: 'ر.س',
+  USD: '$',
+  EUR: '€',
+  GBP: '£',
+  JOD: 'د.أ',
+  AED: 'د.إ',
+  KWD: 'د.ك',
+  BHD: 'د.ب',
+  QAR: 'ر.ق',
+  OMR: 'ر.ع',
+  EGP: 'ج.م',
+  IQD: 'د.ع',
+};
+
+export function normalizeCurrency(value: string | undefined | null): string {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return '';
+  return /^[a-z]{3}$/i.test(trimmed) ? trimmed.toUpperCase() : trimmed.slice(0, 12);
+}
+
+export function getAppCurrency(): string {
+  if (typeof localStorage === 'undefined') return 'SAR';
+  return normalizeCurrency(localStorage.getItem('sre_currency')) || 'SAR';
+}
+
+export function setAppCurrency(currency: string): void {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem('sre_currency', normalizeCurrency(currency) || 'SAR');
+  }
+}
+
+export function fmtMoney(v: number, currency = getAppCurrency()): string {
+  const normalizedCurrency = normalizeCurrency(currency) || 'SAR';
+  const symbol = CURRENCY_SYMBOLS[normalizedCurrency] || normalizedCurrency;
   const formatted = new Intl.NumberFormat('en-SA', {
     maximumFractionDigits: 2,
     minimumFractionDigits: 0,

@@ -7,6 +7,7 @@ import {
   buildInvoiceFinancialRows,
   buildCashPaymentFinancialRows,
   filterCashPaymentFinancialRows,
+  summarizeInvoiceFinancialRows,
   summarizeCashPaymentRows,
   summarizeInvoiceFinancialPeriod,
   type SettlementFilter,
@@ -19,7 +20,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
-import { BarChart3 } from 'lucide-react';
+import { BarChart3, Search } from 'lucide-react';
 import { generateArabicPDF } from '../utils/pdfGenerator';
 import { exportToExcel } from '../utils/excelExporter';
 import { toast } from 'sonner';
@@ -33,6 +34,7 @@ export default function FinancialReport() {
   const invoices = useLiveQuery(() => db.invoices.toArray(), []) || [];
   const payments = useLiveQuery(() => db.payments.toArray(), []) || [];
   const customers = useLiveQuery(() => db.customers.orderBy('fullName').toArray(), []) || [];
+  const properties = useLiveQuery(() => db.properties.toArray(), []) || [];
   const settings = useLiveQuery(() => db.settings.get('singleton'), []);
 
   const today = new Date();
@@ -40,6 +42,25 @@ export default function FinancialReport() {
   const [to, setTo] = useState(toISODate(endOfMonth(today)));
   const [customerId, setCustomerId] = useState('all');
   const [settlement, setSettlement] = useState<SettlementFilter>('all');
+  const [search, setSearch] = useState('');
+
+  const customerById = useMemo(
+    () => new Map(customers.map((customer) => [customer.id, customer.fullName])),
+    [customers],
+  );
+  const propertyById = useMemo(
+    () => new Map(properties.map((property) => [property.id, property.name])),
+    [properties],
+  );
+  const normalizedSearch = search.trim().toLocaleLowerCase('ar');
+  const matchesSearch = (invoice: (typeof invoices)[number]) => {
+    if (!normalizedSearch) return true;
+    return [
+      invoice.invoiceNumber,
+      customerById.get(invoice.customerId) || '',
+      propertyById.get(invoice.propertyId) || '',
+    ].some((value) => value.toLocaleLowerCase('ar').includes(normalizedSearch));
+  };
 
   const fromD = new Date(from);
   const toD = endOfDay(new Date(to));
@@ -47,16 +68,19 @@ export default function FinancialReport() {
     () => buildInvoiceFinancialRows(invoices, payments),
     [invoices, payments],
   );
-  const periodSummary = useMemo(
+  const basePeriodSummary = useMemo(
     () => summarizeInvoiceFinancialPeriod(allRows, { from: fromD, to: toD, customerId, settlement }),
     [allRows, from, to, customerId, settlement],
   );
+  const filteredRows = useMemo(
+    () => basePeriodSummary.rows.filter((row) => matchesSearch(row.invoice)),
+    [basePeriodSummary.rows, normalizedSearch, customerById, propertyById],
+  );
   const {
-    rows: filteredRows,
     totalRevenue: settledFromPeriodDues,
     totalDue,
     totalOutstanding,
-  } = periodSummary;
+  } = useMemo(() => summarizeInvoiceFinancialRows(filteredRows), [filteredRows]);
   const allCashPaymentRows = useMemo(
     () => buildCashPaymentFinancialRows(invoices, payments),
     [invoices, payments],
@@ -67,20 +91,18 @@ export default function FinancialReport() {
       to: toD,
       customerId,
       settlement,
-    }).sort(
-      (a, b) => new Date(b.payment.paymentDate).getTime() - new Date(a.payment.paymentDate).getTime(),
-    ),
-    [allCashPaymentRows, from, to, customerId, settlement],
+    })
+      .filter((row) => matchesSearch(row.invoice))
+      .sort(
+        (a, b) => new Date(b.payment.paymentDate).getTime() - new Date(a.payment.paymentDate).getTime(),
+      ),
+    [allCashPaymentRows, from, to, customerId, settlement, normalizedSearch, customerById, propertyById],
   );
   const { cashRevenue } = useMemo(
     () => summarizeCashPaymentRows(filteredCashPaymentRows),
     [filteredCashPaymentRows],
   );
 
-  const customerById = useMemo(
-    () => new Map(customers.map((customer) => [customer.id, customer.fullName])),
-    [customers],
-  );
   const detailRows = useMemo(
     () => [...filteredRows].sort(
       (a, b) => new Date(b.invoice.dueDate).getTime() - new Date(a.invoice.dueDate).getTime(),
@@ -122,7 +144,7 @@ export default function FinancialReport() {
     try {
       await generateArabicPDF({
         title: 'التقرير المالي الشامل',
-        subtitle: `فترة التقرير: ${fmtDate(fromD)} — ${fmtDate(toD)} · العميل: ${selectedCustomerName} · الحالة: ${settlementLabel}`,
+        subtitle: `فترة التقرير: ${fmtDate(fromD)} — ${fmtDate(toD)} · العميل: ${selectedCustomerName} · الحالة: ${settlementLabel}${search.trim() ? ` · البحث: ${search.trim()}` : ''}`,
         companyName: settings?.companyName,
         logoBase64: settings?.logoBase64,
         pageOrientation: 'landscape',
@@ -266,7 +288,7 @@ export default function FinancialReport() {
       </div>
 
       <Card className="glass border-0">
-        <CardContent className="grid grid-cols-1 md:grid-cols-6 gap-3 pt-6">
+        <CardContent className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-8 gap-3 pt-6">
           <div className="space-y-1.5">
             <Label className="text-xs">{AR.common.from}</Label>
             <Input type="date" value={from} onChange={(e) => setFrom(e.target.value)} data-testid="report-from-input" />
@@ -297,6 +319,19 @@ export default function FinancialReport() {
                 <SelectItem value="unpaid">غير مسدد</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+          <div className="space-y-1.5 xl:col-span-2">
+            <Label className="text-xs">بحث</Label>
+            <div className="relative">
+              <Search className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                data-testid="financial-search-input"
+                className="pr-9"
+                placeholder="ابحث برقم الفاتورة أو العميل أو العقار…"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </div>
           </div>
           <div className="md:col-span-2 flex items-end gap-2 justify-end">
             <Button variant="outline" onClick={exportExcel} data-testid="report-excel-button">{AR.actions.exportExcel}</Button>

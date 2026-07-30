@@ -8,7 +8,7 @@ export type ContractStatus = 'active' | 'extended' | 'terminated' | 'canceled' |
 export type PaymentMethod = 'cash' | 'bank_transfer' | 'check' | 'card' | 'ejar_platform';
 export type PaymentStatus = 'completed' | 'partially_refunded' | 'refunded';
 export type InvoiceStatus = 'paid' | 'partial' | 'overdue' | 'unpaid' | 'canceled';
-export type DocumentRelated = 'property' | 'contract' | 'customer';
+export type DocumentRelated = 'property' | 'contract' | 'customer' | 'payment';
 export type NotificationType = 'payment_due' | 'contract_expiry' | 'system_alert';
 export type ActivityModule = 'properties' | 'customers' | 'contracts' | 'payments' | 'maintenance' | 'tasks' | 'system';
 export type ThemeMode = 'light' | 'dark';
@@ -16,6 +16,24 @@ export type MaintenanceStatus = 'pending' | 'in_progress' | 'completed' | 'cance
 export type MaintenancePriority = 'low' | 'medium' | 'high' | 'urgent';
 export type TaskPriority = 'low' | 'medium' | 'high';
 export type TaskStatus = 'todo' | 'in_progress' | 'done';
+
+export interface BuildingUnit {
+  id: string;
+  number: string;
+  kind: 'apartment' | 'annex';
+  floor?: number;
+  status: PropertyStatus;
+  annualPrice: number;
+  notes?: string;
+}
+
+export interface BuildingDetails {
+  apartmentCount: number;
+  floorCount: number;
+  annexCount: number;
+  apartmentsPerFloor: number;
+  units: BuildingUnit[];
+}
 
 export interface Property {
   id?: string;
@@ -26,6 +44,8 @@ export interface Property {
   city: string;
   price: number;
   currency: string;
+  ownerName?: string;
+  buildingDetails?: BuildingDetails;
   notes?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -45,7 +65,9 @@ export interface Customer {
 
 export interface Contract {
   id?: string;
+  contractNumber?: string;
   propertyId: string;
+  unitId?: string;
   customerId: string;
   contractType: ContractType;
   startDate: Date;
@@ -115,6 +137,7 @@ export interface SystemSettings {
   id: string;
   ownerName: string;
   companyName: string;
+  countryCode: string;
   phone: string;
   email: string;
   taxNumber?: string;

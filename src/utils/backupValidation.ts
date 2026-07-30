@@ -79,6 +79,7 @@ export function validateBackupPayload(data: unknown): BackupValidationResult {
   const customers = ids.get('customers')!;
   const contracts = ids.get('contracts')!;
   const invoices = ids.get('invoices')!;
+  const payments = ids.get('payments')!;
   const hasId = (set: Set<string>, value: unknown) => typeof value === 'string' && set.has(value);
 
   for (const contract of data.contracts as BackupRecord[]) {
@@ -109,6 +110,8 @@ export function validateBackupPayload(data: unknown): BackupValidationResult {
         ? customers
         : document.relatedType === 'contract'
           ? contracts
+          : document.relatedType === 'payment'
+            ? payments
           : undefined;
     if (!target || !hasId(target, document.relatedId)) orphanDocuments += 1;
   }

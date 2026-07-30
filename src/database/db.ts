@@ -40,11 +40,23 @@ export const db = new SmartRealEstateDB();
 
 export async function ensureDefaults(): Promise<SystemSettings> {
   const existing = await db.settings.get('singleton');
-  if (existing) return existing;
+  if (existing) {
+    const normalized: SystemSettings = {
+      ...existing,
+      countryCode: existing.countryCode || '966',
+      currency: existing.currency?.trim() || 'SAR',
+    };
+    if (normalized.countryCode !== existing.countryCode || normalized.currency !== existing.currency) {
+      await db.settings.put(normalized);
+    }
+    if (typeof localStorage !== 'undefined') localStorage.setItem('sre_currency', normalized.currency);
+    return normalized;
+  }
   const defaults: SystemSettings = {
     id: 'singleton',
     ownerName: '',
     companyName: 'المتخصص الذكي للعقارات',
+    countryCode: '966',
     phone: '966',
     email: '',
     taxNumber: '',
@@ -54,5 +66,6 @@ export async function ensureDefaults(): Promise<SystemSettings> {
     logoBase64: undefined,
   };
   await db.settings.put(defaults);
+  if (typeof localStorage !== 'undefined') localStorage.setItem('sre_currency', defaults.currency);
   return defaults;
 }

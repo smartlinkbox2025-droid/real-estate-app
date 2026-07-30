@@ -15,6 +15,7 @@
 // @ts-ignore
 import pdfMake from 'pdfmake/build/pdfmake';
 import { CAIRO_B64 } from '../assets/fonts/cairoBase64';
+import { fmtMoney } from './dateHelpers';
 
 // ─── تسجيل الخطوط (مرة واحدة فقط) ──────────────────────────────────────────
 let _fontsRegistered = false;
@@ -333,6 +334,7 @@ export interface ReceiptOptions {
   invoiceNumber?: string;
   companyName?: string;
   companyPhone?: string;
+  currency?: string;
   logoBase64?: string;
 }
 
@@ -340,7 +342,7 @@ export async function generateReceipt(opts: ReceiptOptions): Promise<void> {
   const {
     receiptNumber, paymentDate, amountPaid, paymentMethod,
     referenceNumber, notes, customerName, propertyName,
-    invoiceNumber, companyName, companyPhone, logoBase64,
+    invoiceNumber, companyName, companyPhone, currency, logoBase64,
   } = opts;
 
   const dateStr = (() => {
@@ -349,8 +351,8 @@ export async function generateReceipt(opts: ReceiptOptions): Promise<void> {
     return isNaN(d.getTime()) ? String(paymentDate) : d.toLocaleDateString('en-SA');
   })();
 
-  const amountStr   = new Intl.NumberFormat('en-SA').format(amountPaid) + ' ر.س';
-  const amountWords = numberToArabicWords(amountPaid);
+  const amountStr   = fmtMoney(amountPaid, currency);
+  const amountWords = numberToArabicWords(amountPaid, currency?.trim() || 'SAR');
 
   // رأس السند (شعار + شركة يميناً — عنوان + رقم + تاريخ يساراً)
   const rightCol: any[] = [];
@@ -396,9 +398,9 @@ export async function generateReceipt(opts: ReceiptOptions): Promise<void> {
 
   await download(
     {
-      pageSize:     { width: 595, height: 520 },
+      pageSize:     'A4',
       pageMargins:  [40, 28, 40, 28],
-      defaultStyle: { font: 'Cairo', fontSize: 10.5, lineHeight: 1.5, alignment: 'right' },
+      defaultStyle: { font: 'Cairo', fontSize: 10.5, lineHeight: 1.35, alignment: 'right' },
       styles:       STYLES,
       content: [
         // شريط ذهبي
@@ -476,7 +478,7 @@ export async function generateReceipt(opts: ReceiptOptions): Promise<void> {
 }
 
 // ─── مساعد: تحويل الرقم إلى كلمات عربية ──────────────────────────────────────
-function numberToArabicWords(n: number): string {
+function numberToArabicWords(n: number, currencyLabel = 'SAR'): string {
   if (!isFinite(n) || n < 0) return String(n);
 
   const ones = [
@@ -516,7 +518,7 @@ function numberToArabicWords(n: number): string {
 
   const intPart = Math.floor(n);
   const decPart = Math.round((n - intPart) * 100);
-  let   result  = `${toWords(intPart)} ريال سعودي`;
-  if (decPart > 0) result += ` و${toWords(decPart)} هللة`;
+  let result = `${toWords(intPart)} ${currencyLabel}`;
+  if (decPart > 0) result += ` و${toWords(decPart)} جزءاً من مائة`;
   return result + ' فقط لا غير';
 }

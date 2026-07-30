@@ -12,7 +12,7 @@ import { db, ensureDefaults } from '../database/db';
 import { AR } from '../constants/arabicTerms';
 import { usePWA } from '../hooks/usePWA';
 import { Button } from '../components/ui/button';
-import { seedDemoData, refreshOverdueInvoices } from '../database/queries';
+import { ensureContractNumbers, seedDemoData, refreshOverdueInvoices } from '../database/queries';
 
 const NAV_MAIN = [
   { to: '/', label: AR.nav.dashboard, icon: LayoutDashboard, exact: true },
@@ -115,6 +115,7 @@ export default function MainLayout() {
     (async () => {
       await ensureDefaults();
       await seedDemoData();
+      await ensureContractNumbers();
       await refreshOverdueInvoices();
     })();
   }, []);

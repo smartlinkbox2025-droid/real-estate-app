@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../database/db';
 import { AR } from '../constants/arabicTerms';
-import type { Contract, ContractType, PaymentFrequency, ContractStatus } from '../models/types';
+import type { Contract, ContractType, PaymentFrequency, ContractStatus, PropertyType } from '../models/types';
 import { createContractWithInvoices, terminateContract, deleteContract, uploadDocument, downloadDocument } from '../database/queries';
 import { fmtDate, fmtMoney, toISODate } from '../utils/dateHelpers';
 import { Card } from '../components/ui/card';
@@ -17,6 +17,8 @@ import { Plus, FileText, Trash2, XCircle, Eye, Paperclip, Download, FileDown, Im
 import { toast } from 'sonner';
 import { generateArabicPDF } from '../utils/pdfGenerator';
 import { exportToExcel } from '../utils/excelExporter';
+import { hasManagedUnits, propertyContractLabel, propertyHasVacancy, vacantBuildingUnits } from '../utils/buildingUnits';
+import { getContractDisplayNumber } from '../utils/contractNumbers';
 
 const STATUS_TONE: Record<ContractStatus, string> = {
   active:     'bg-success/15 text-success border-success/30',
@@ -36,28 +38,45 @@ export default function Contracts() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [viewing, setViewing] = useState<Contract | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | ContractStatus>('all');
+  const [propertyFilter, setPropertyFilter] = useState('all');
+  const [propertyTypeFilter, setPropertyTypeFilter] = useState<'all' | PropertyType>('all');
+  const [customerFilter, setCustomerFilter] = useState('');
 
-  const filtered = useMemo(() =>
-    contracts.filter((c) => statusFilter === 'all' || c.status === statusFilter),
-    [contracts, statusFilter]);
+  const filtered = useMemo(() => {
+    const customerSearch = customerFilter.trim().toLowerCase();
+    return contracts.filter((contract) => {
+      if (statusFilter !== 'all' && contract.status !== statusFilter) return false;
+      if (propertyFilter !== 'all' && contract.propertyId !== propertyFilter) return false;
+      const property = properties.find((item) => item.id === contract.propertyId);
+      if (propertyTypeFilter !== 'all' && property?.type !== propertyTypeFilter) return false;
+      if (customerSearch) {
+        const customer = customers.find((item) => item.id === contract.customerId);
+        const matchesCustomer = (customer?.fullName || '').toLowerCase().includes(customerSearch);
+        const matchesNumber = getContractDisplayNumber(contract, contracts).toLowerCase().includes(customerSearch);
+        if (!matchesCustomer && !matchesNumber) return false;
+      }
+      return true;
+    });
+  }, [contracts, statusFilter, propertyFilter, propertyTypeFilter, customerFilter, properties, customers]);
 
-  const propName = (id: string) => properties.find((p) => p.id === id)?.name || '—';
+  const propName = (id: string, unitId?: string) => propertyContractLabel(properties.find((p) => p.id === id), unitId);
   const custName = (id: string) => customers.find((c) => c.id === id)?.fullName || '—';
+  const contractNumber = (contract: Contract) => getContractDisplayNumber(contract, contracts);
 
   const exportExcel = () => {
     exportToExcel({
       filename: `العقود_${new Date().toISOString().slice(0, 10)}`,
       sheetName: 'العقود',
-      headers: ['العقار', 'العميل', 'نوع العقد', 'تاريخ البداية', 'تاريخ النهاية', 'القيمة الكلية', 'الرصيد المتبقي', 'دورية الدفع', 'الحالة'],
+      headers: ['رقم العقد', 'العقار', 'العميل', 'نوع العقد', 'تاريخ البداية', 'تاريخ النهاية', 'القيمة الكلية', 'الرصيد المتبقي', 'دورية الدفع', 'الحالة'],
       rows: filtered.map((c) => [
-        propName(c.propertyId), custName(c.customerId),
+        contractNumber(c), propName(c.propertyId, c.unitId), custName(c.customerId),
         AR.contract.types[c.contractType],
         fmtDate(c.startDate), fmtDate(c.endDate),
         c.totalAmount, c.remainingBalance,
         AR.contract.frequencies[c.paymentFrequency],
         AR.contract.statuses[c.status],
       ]),
-      columnWidths: [24, 22, 12, 12, 12, 14, 14, 14, 12],
+      columnWidths: [18, 24, 22, 12, 12, 12, 14, 14, 14, 12],
     });
     toast.success('تم تصدير ملف إكسل');
   };
@@ -72,9 +91,9 @@ export default function Contracts() {
         filename: `العقود_${new Date().toISOString().slice(0, 10)}.pdf`,
         sections: [{
           table: {
-            headers: ['العقار', 'العميل', 'نوع العقد', 'تاريخ البداية', 'تاريخ النهاية', 'القيمة الكلية', 'دورية الدفع', 'الحالة'],
+            headers: ['رقم العقد', 'العقار', 'العميل', 'نوع العقد', 'تاريخ البداية', 'تاريخ النهاية', 'القيمة الكلية', 'دورية الدفع', 'الحالة'],
             rows: filtered.map((c) => [
-              propName(c.propertyId), custName(c.customerId),
+              contractNumber(c), propName(c.propertyId, c.unitId), custName(c.customerId),
               AR.contract.types[c.contractType],
               fmtDate(c.startDate), fmtDate(c.endDate),
               fmtMoney(c.totalAmount),
@@ -104,8 +123,8 @@ export default function Contracts() {
     const relatedInvoices = invoices.filter((i) => i.contractId === c.id);
     try {
       await generateArabicPDF({
-        title: 'عقد ' + AR.contract.types[c.contractType],
-        subtitle: fmtDate(c.createdAt),
+        title: `عقد ${contractNumber(c)}`,
+        subtitle: `${AR.contract.types[c.contractType]} · ${fmtDate(c.createdAt)}`,
         companyName: settings?.companyName,
         logoBase64: settings?.logoBase64,
         sections: [
@@ -114,7 +133,8 @@ export default function Contracts() {
             table: {
               headers: ['البند', 'التفاصيل'],
               rows: [
-                ['العقار', propName(c.propertyId)],
+                ['رقم العقد', contractNumber(c)],
+                ['العقار', propName(c.propertyId, c.unitId)],
                 ['العميل', custName(c.customerId)],
               ],
             },
@@ -142,7 +162,7 @@ export default function Contracts() {
             },
           },
         ],
-        filename: `عقد_${c.id?.slice(-6)}.pdf`,
+        filename: `عقد_${contractNumber(c)}.pdf`,
       });
     } catch (e: any) { toast.error('تعذّر إنشاء PDF: ' + (e.message || '')); }
   };
@@ -155,13 +175,6 @@ export default function Contracts() {
           <p className="text-sm text-muted-foreground mt-1">إبرام العقود مع توليد الأقساط والفواتير آلياً.</p>
         </div>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap">
-          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
-            <SelectTrigger className="col-span-2 w-full sm:w-40" data-testid="contract-status-filter"><SelectValue placeholder={AR.contract.status} /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">{AR.actions.all}</SelectItem>
-              {(Object.keys(AR.contract.statuses) as ContractStatus[]).map((k) => <SelectItem key={k} value={k}>{AR.contract.statuses[k]}</SelectItem>)}
-            </SelectContent>
-          </Select>
           <Button variant="outline" onClick={exportExcel} className="w-full sm:w-auto">{AR.actions.exportExcel}</Button>
           <Button variant="outline" onClick={exportPdf} className="w-full gap-1.5 sm:w-auto" data-testid="export-contracts-pdf">
             <FileDown className="h-4 w-4" /> PDF
@@ -172,11 +185,46 @@ export default function Contracts() {
         </div>
       </div>
 
+      <Card className="glass border-0 p-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <Select value={statusFilter} onValueChange={(value) => setStatusFilter(value as 'all' | ContractStatus)}>
+            <SelectTrigger className="w-full" data-testid="contract-status-filter"><SelectValue placeholder={AR.contract.status} /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{AR.actions.all}</SelectItem>
+              {(Object.keys(AR.contract.statuses) as ContractStatus[]).map((status) => <SelectItem key={status} value={status}>{AR.contract.statuses[status]}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={propertyFilter} onValueChange={setPropertyFilter}>
+            <SelectTrigger className="w-full" data-testid="contract-property-filter"><SelectValue placeholder="اسم العقار" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">جميع العقارات</SelectItem>
+              {[...properties].sort((a, b) => a.name.localeCompare(b.name, 'ar')).map((property) => (
+                <SelectItem key={property.id} value={property.id!}>{property.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={propertyTypeFilter} onValueChange={(value) => setPropertyTypeFilter(value as 'all' | PropertyType)}>
+            <SelectTrigger className="w-full" data-testid="contract-property-type-filter"><SelectValue placeholder="نوع العقار" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">جميع الأنواع</SelectItem>
+              {(Object.keys(AR.property.types) as PropertyType[]).map((type) => <SelectItem key={type} value={type}>{AR.property.types[type]}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Input
+            value={customerFilter}
+            onChange={(event) => setCustomerFilter(event.target.value)}
+            placeholder="اسم العميل أو رقم العقد"
+            data-testid="contract-customer-filter"
+          />
+        </div>
+      </Card>
+
       <Card className="glass border-0 overflow-hidden">
         <div className="overflow-x-auto">
-          <Table className="min-w-[56rem]">
+          <Table className="min-w-[64rem]">
             <TableHeader>
               <TableRow>
+                <TableHead>رقم العقد</TableHead>
                 <TableHead>{AR.contract.property}</TableHead>
                 <TableHead>{AR.contract.customer}</TableHead>
                 <TableHead>{AR.contract.type}</TableHead>
@@ -190,10 +238,11 @@ export default function Contracts() {
             </TableHeader>
             <TableBody>
               {filtered.length === 0 ? (
-                <TableRow><TableCell colSpan={9} className="text-center py-10 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
+                <TableRow><TableCell colSpan={10} className="text-center py-10 text-muted-foreground">{AR.common.empty}</TableCell></TableRow>
               ) : filtered.map((c) => (
                 <TableRow key={c.id} data-testid={`contract-row-${c.id}`}>
-                  <TableCell className="font-medium">{propName(c.propertyId)}</TableCell>
+                  <TableCell className="num font-semibold">{contractNumber(c)}</TableCell>
+                  <TableCell className="font-medium">{propName(c.propertyId, c.unitId)}</TableCell>
                   <TableCell>{custName(c.customerId)}</TableCell>
                   <TableCell>{AR.contract.types[c.contractType]}</TableCell>
                   <TableCell className="text-xs">{fmtDate(c.startDate)}</TableCell>
@@ -225,8 +274,9 @@ export default function Contracts() {
       {viewing && (
         <ContractView
           contract={viewing}
+          contractNumber={contractNumber(viewing)}
           onClose={() => setViewing(null)}
-          propertyName={propName(viewing.propertyId)}
+          propertyName={propName(viewing.propertyId, viewing.unitId)}
           customerName={custName(viewing.customerId)}
           invoices={invoices.filter((i) => i.contractId === viewing.id)}
         />
@@ -241,7 +291,7 @@ function ContractDialog({ open, onOpenChange, properties, customers }: { open: b
   const fileRef   = useRef<HTMLInputElement>(null);
 
   const [form, setForm] = useState({
-    propertyId: '', customerId: '',
+    propertyId: '', unitId: '', customerId: '',
     contractType: 'rent' as ContractType,
     startDate: toISODate(today), endDate: toISODate(yearAhead),
     totalAmount: 0, paymentFrequency: 'monthly' as PaymentFrequency,
@@ -251,7 +301,7 @@ function ContractDialog({ open, onOpenChange, properties, customers }: { open: b
 
   useEffect(() => {
     if (open) {
-      setForm({ propertyId: '', customerId: '', contractType: 'rent', startDate: toISODate(today), endDate: toISODate(yearAhead), totalAmount: 0, paymentFrequency: 'monthly', penaltyRate: 0, status: 'active' });
+      setForm({ propertyId: '', unitId: '', customerId: '', contractType: 'rent', startDate: toISODate(today), endDate: toISODate(yearAhead), totalAmount: 0, paymentFrequency: 'monthly', penaltyRate: 0, status: 'active' });
       setAttachedFile(null);
     }
   }, [open]);
@@ -264,6 +314,8 @@ function ContractDialog({ open, onOpenChange, properties, customers }: { open: b
 
   const submit = async () => {
     if (!form.propertyId || !form.customerId || !form.totalAmount) { toast.error('يرجى اختيار العقار والعميل وإدخال القيمة'); return; }
+    const selectedProperty = properties.find((property) => property.id === form.propertyId);
+    if (hasManagedUnits(selectedProperty) && !form.unitId) { toast.error('يرجى اختيار الشقة أو الملحق'); return; }
     const startDate = new Date(form.startDate);
     const endDate = new Date(form.endDate);
     if (isNaN(startDate.getTime()) || isNaN(endDate.getTime()) || endDate <= startDate) {
@@ -275,24 +327,26 @@ function ContractDialog({ open, onOpenChange, properties, customers }: { open: b
       return;
     }
     try {
-      const { contractId, invoicesCreated } = await createContractWithInvoices({ ...form, startDate, endDate, totalAmount: Number(form.totalAmount), penaltyRate: Number(form.penaltyRate) });
+      const { contractId, contractNumber, invoicesCreated } = await createContractWithInvoices({ ...form, startDate, endDate, totalAmount: Number(form.totalAmount), penaltyRate: Number(form.penaltyRate) });
       // Upload contract image if attached
       if (attachedFile) {
         await uploadDocument(attachedFile, 'contract', contractId);
       }
-      toast.success(`تم إبرام العقد وتوليد ${invoicesCreated} فاتورة تلقائياً${attachedFile ? ' ورُفعت صورة العقد' : ''}`);
+      toast.success(`تم إبرام العقد ${contractNumber} وتوليد ${invoicesCreated} فاتورة تلقائياً${attachedFile ? ' ورُفعت صورة العقد' : ''}`);
       onOpenChange(false);
     } catch (e: any) { toast.error(e.message || AR.common.error); }
   };
 
-  const vacantProps = properties.filter((p) => p.status === 'vacant');
+  const vacantProps = properties.filter(propertyHasVacancy);
+  const selectedProperty = properties.find((property) => property.id === form.propertyId);
+  const availableUnits = vacantBuildingUnits(selectedProperty);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto" data-testid="contract-dialog">
         <DialogHeader><DialogTitle>{AR.contract.addNew}</DialogTitle></DialogHeader>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label={AR.contract.property}>
-            <Select value={form.propertyId} onValueChange={(v) => setForm({ ...form, propertyId: v })}>
+            <Select value={form.propertyId} onValueChange={(v) => setForm({ ...form, propertyId: v, unitId: '' })}>
               <SelectTrigger data-testid="contract-property-select"><SelectValue placeholder="اختر العقار" /></SelectTrigger>
               <SelectContent>
                 {vacantProps.length === 0 && <div className="px-3 py-2 text-xs text-muted-foreground">لا توجد عقارات شاغرة</div>}
@@ -300,6 +354,24 @@ function ContractDialog({ open, onOpenChange, properties, customers }: { open: b
               </SelectContent>
             </Select>
           </Field>
+          {hasManagedUnits(selectedProperty) && (
+            <Field label="الشقة / الملحق">
+              <Select value={form.unitId} onValueChange={(unitId) => {
+                const unit = availableUnits.find((item) => item.id === unitId);
+                setForm({ ...form, unitId, totalAmount: form.totalAmount || unit?.annualPrice || 0 });
+              }}>
+                <SelectTrigger data-testid="contract-unit-select"><SelectValue placeholder="اختر الوحدة التابعة للعمارة" /></SelectTrigger>
+                <SelectContent className="max-h-64 overflow-y-auto">
+                  {availableUnits.map((unit) => (
+                    <SelectItem key={unit.id} value={unit.id}>
+                      {unit.kind === 'annex' ? unit.number : `شقة ${unit.number}`}
+                      {unit.floor ? ` — الطابق ${unit.floor}` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
           <Field label={AR.contract.customer}>
             <Select value={form.customerId} onValueChange={(v) => setForm({ ...form, customerId: v })}>
               <SelectTrigger data-testid="contract-customer-select"><SelectValue placeholder="اختر العميل" /></SelectTrigger>
@@ -381,7 +453,7 @@ function ContractDialog({ open, onOpenChange, properties, customers }: { open: b
   );
 }
 
-function ContractView({ contract, onClose, propertyName, customerName, invoices }: { contract: Contract; onClose: () => void; propertyName: string; customerName: string; invoices: any[] }) {
+function ContractView({ contract, contractNumber, onClose, propertyName, customerName, invoices }: { contract: Contract; contractNumber: string; onClose: () => void; propertyName: string; customerName: string; invoices: any[] }) {
   const docs = useLiveQuery(() => db.documents.where('relatedId').equals(contract.id!).toArray(), [contract.id]) || [];
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -399,6 +471,7 @@ function ContractView({ contract, onClose, propertyName, customerName, invoices 
         <DialogHeader><DialogTitle>تفاصيل العقد</DialogTitle></DialogHeader>
         <div className="space-y-4 text-sm max-h-[70vh] overflow-y-auto">
           <div className="grid grid-cols-2 gap-3">
+            <Info label="رقم العقد" value={contractNumber} />
             <Info label={AR.contract.property} value={propertyName} />
             <Info label={AR.contract.customer} value={customerName} />
             <Info label={AR.contract.type} value={AR.contract.types[contract.contractType]} />

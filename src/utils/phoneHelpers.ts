@@ -9,13 +9,44 @@ function toWesternDigits(value: string): string {
     .replace(/[۰-۹]/g, (digit) => String(PERSIAN_DIGITS.indexOf(digit)));
 }
 
-export function normalizeSaudiPhone(value: string | undefined | null): string {
+export function normalizeCountryCode(value: string | undefined | null): string {
   let digits = toWesternDigits(String(value || '')).replace(/\D/g, '');
-  if (!digits) return '';
-  if (digits.startsWith('00966')) digits = digits.slice(2);
-  if (digits.startsWith(SAUDI_COUNTRY_CODE)) return digits;
-  if (digits.startsWith('0')) digits = digits.slice(1);
-  return `${SAUDI_COUNTRY_CODE}${digits}`;
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  return digits.slice(0, 4);
+}
+
+export function isValidCountryCode(value: string | undefined | null): boolean {
+  return /^[1-9]\d{0,3}$/.test(normalizeCountryCode(value));
+}
+
+export function normalizeInternationalPhone(
+  value: string | undefined | null,
+  countryCode = SAUDI_COUNTRY_CODE,
+): string {
+  const code = normalizeCountryCode(countryCode);
+  let digits = toWesternDigits(String(value || '')).replace(/\D/g, '');
+  if (!digits || !code) return '';
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  if (digits.startsWith(code)) return digits;
+  digits = digits.replace(/^0+/, '');
+  return `${code}${digits}`;
+}
+
+export function isValidInternationalPhone(
+  value: string | undefined | null,
+  countryCode = SAUDI_COUNTRY_CODE,
+): boolean {
+  const code = normalizeCountryCode(countryCode);
+  const phone = normalizeInternationalPhone(value, code);
+  return isValidCountryCode(code)
+    && phone.startsWith(code)
+    && /^\d{7,15}$/.test(phone)
+    && phone.length > code.length + 4;
+}
+
+// Backward-compatible Saudi helpers for old imports and backup data.
+export function normalizeSaudiPhone(value: string | undefined | null): string {
+  return normalizeInternationalPhone(value, SAUDI_COUNTRY_CODE);
 }
 
 export function isValidSaudiMobile(value: string | undefined | null): boolean {
@@ -49,10 +80,14 @@ export function buildInvoiceWhatsAppMessage(options: InvoiceWhatsAppMessageOptio
   ].join('\n') + sender;
 }
 
-export function buildWhatsAppUrl(phone: string, message: string): string {
-  const normalizedPhone = normalizeSaudiPhone(phone);
-  if (!isValidSaudiMobile(normalizedPhone)) {
-    throw new Error('رقم جوال العميل غير صالح. يجب أن يبدأ بـ 9665 ويتكون من 12 رقماً.');
+export function buildWhatsAppUrl(
+  phone: string,
+  message: string,
+  countryCode = SAUDI_COUNTRY_CODE,
+): string {
+  const normalizedPhone = normalizeInternationalPhone(phone, countryCode);
+  if (!isValidInternationalPhone(normalizedPhone, countryCode)) {
+    throw new Error(`رقم جوال العميل غير صالح. أدخل رقماً صحيحاً بالرمز الدولي +${normalizeCountryCode(countryCode)}.`);
   }
   return `https://wa.me/${normalizedPhone}?text=${encodeURIComponent(message)}`;
 }

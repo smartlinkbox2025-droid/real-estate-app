@@ -17,7 +17,11 @@ import { Plus, Pencil, Trash2, Search, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import { exportToExcel } from '../utils/excelExporter';
 import { generateArabicPDF } from '../utils/pdfGenerator';
-import { isValidSaudiMobile, normalizeSaudiPhone } from '../utils/phoneHelpers';
+import {
+  isValidInternationalPhone,
+  normalizeCountryCode,
+  normalizeInternationalPhone,
+} from '../utils/phoneHelpers';
 
 export default function Customers() {
   const customers = useLiveQuery(() => db.customers.toArray(), []) || [];
@@ -132,24 +136,40 @@ export default function Customers() {
         </div>
       </Card>
 
-      <CustomerDialog open={dialogOpen} onOpenChange={setDialogOpen} editing={editing} />
+      <CustomerDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        editing={editing}
+        countryCode={settings?.countryCode || '966'}
+      />
     </div>
   );
 }
 
-function CustomerDialog({ open, onOpenChange, editing }: { open: boolean; onOpenChange: (v: boolean) => void; editing: Customer | null }) {
+function CustomerDialog({
+  open,
+  onOpenChange,
+  editing,
+  countryCode,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  editing: Customer | null;
+  countryCode: string;
+}) {
   const [form, setForm] = useState<Partial<Customer>>({});
+  const normalizedCountryCode = normalizeCountryCode(countryCode) || '966';
 
   useEffect(() => {
-    if (editing) setForm({ ...editing, phone: normalizeSaudiPhone(editing.phone) });
-    else setForm({ fullName: '', nationalId: '', phone: '966', email: '', address: '', city: 'الرياض', notes: '' });
-  }, [editing, open]);
+    if (editing) setForm({ ...editing });
+    else setForm({ fullName: '', nationalId: '', phone: normalizedCountryCode, email: '', address: '', city: 'الرياض', notes: '' });
+  }, [editing, open, normalizedCountryCode]);
 
   const submit = async () => {
     if (!form.fullName || !form.nationalId || !form.phone) { toast.error('يرجى تعبئة الحقول الإلزامية'); return; }
-    const phone = normalizeSaudiPhone(form.phone);
-    if (!isValidSaudiMobile(phone)) {
-      toast.error('رقم الجوال يجب أن يبدأ بـ 9665 ويتكون من 12 رقماً');
+    const phone = normalizeInternationalPhone(form.phone, normalizedCountryCode);
+    if (!isValidInternationalPhone(phone, normalizedCountryCode)) {
+      toast.error(`أدخل رقم جوال صحيحاً بالرمز الدولي +${normalizedCountryCode}`);
       return;
     }
     try {
@@ -169,14 +189,17 @@ function CustomerDialog({ open, onOpenChange, editing }: { open: boolean; onOpen
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label={AR.customer.fullName} className="md:col-span-2"><Input value={form.fullName || ''} onChange={(e) => setForm({ ...form, fullName: e.target.value })} data-testid="customer-name-input" /></Field>
           <Field label={AR.customer.nationalId}><Input value={form.nationalId || ''} onChange={(e) => setForm({ ...form, nationalId: e.target.value })} data-testid="customer-id-input" /></Field>
-          <Field label={`${AR.customer.phone} (966)`}>
+          <Field label={`${AR.customer.phone} (+${normalizedCountryCode})`}>
             <Input
               dir="ltr"
               inputMode="tel"
-              placeholder="9665XXXXXXXX"
+              placeholder={`${normalizedCountryCode}XXXXXXXXX`}
               value={form.phone || ''}
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
-              onBlur={(e) => setForm({ ...form, phone: normalizeSaudiPhone(e.target.value) || '966' })}
+              onBlur={(e) => setForm({
+                ...form,
+                phone: normalizeInternationalPhone(e.target.value, normalizedCountryCode) || normalizedCountryCode,
+              })}
               data-testid="customer-phone-input"
             />
           </Field>

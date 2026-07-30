@@ -18,7 +18,11 @@ import { Plus, Pencil, Trash2, Wrench, CheckCircle2, FileDown } from 'lucide-rea
 import { toast } from 'sonner';
 import { exportToExcel } from '../utils/excelExporter';
 import { generateArabicPDF } from '../utils/pdfGenerator';
-import { isValidSaudiMobile, normalizeSaudiPhone } from '../utils/phoneHelpers';
+import {
+  isValidInternationalPhone,
+  normalizeCountryCode,
+  normalizeInternationalPhone,
+} from '../utils/phoneHelpers';
 
 const STATUS_TONE: Record<MaintenanceStatus, string> = {
   pending:     'bg-warning/15 text-warning border-warning/30',
@@ -37,6 +41,7 @@ const PRIORITY_TONE: Record<MaintenancePriority, string> = {
 export default function Maintenance() {
   const items      = useLiveQuery(() => db.maintenance.toArray(), []) || [];
   const properties = useLiveQuery(() => db.properties.toArray(), []) || [];
+  const settings   = useLiveQuery(() => db.settings.get('singleton'), []);
   const [statusFilter, setStatusFilter] = useState<'all' | MaintenanceStatus>('all');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<MaintenanceItem | null>(null);
@@ -165,27 +170,46 @@ export default function Maintenance() {
         </div>
       </Card>
 
-      <MaintenanceDialog open={dialogOpen} onOpenChange={setDialogOpen} editing={editing} properties={properties} />
+      <MaintenanceDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        editing={editing}
+        properties={properties}
+        countryCode={settings?.countryCode || '966'}
+      />
     </div>
   );
 }
 
-function MaintenanceDialog({ open, onOpenChange, editing, properties }: { open: boolean; onOpenChange: (v: boolean) => void; editing: MaintenanceItem | null; properties: any[] }) {
+function MaintenanceDialog({
+  open,
+  onOpenChange,
+  editing,
+  properties,
+  countryCode,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  editing: MaintenanceItem | null;
+  properties: any[];
+  countryCode: string;
+}) {
   const [form, setForm] = useState<Partial<MaintenanceItem>>({});
+  const normalizedCountryCode = normalizeCountryCode(countryCode) || '966';
 
   useEffect(() => {
     if (editing) setForm({
       ...editing,
-      vendorPhone: editing.vendorPhone ? normalizeSaudiPhone(editing.vendorPhone) : '',
+      vendorPhone: editing.vendorPhone || '',
     });
     else setForm({ propertyId: '', title: '', description: '', status: 'pending', priority: 'medium', cost: 0, vendorName: '', vendorPhone: '' });
   }, [editing, open]);
 
   const submit = async () => {
     if (!form.propertyId || !form.title) { toast.error('يرجى اختيار العقار وإدخال عنوان الطلب'); return; }
-    const vendorPhone = form.vendorPhone ? normalizeSaudiPhone(form.vendorPhone) : '';
-    if (vendorPhone && !isValidSaudiMobile(vendorPhone)) {
-      toast.error('رقم جوال المقاول يجب أن يبدأ بـ 9665 ويتكون من 12 رقماً');
+    const vendorPhone = form.vendorPhone ? normalizeInternationalPhone(form.vendorPhone, normalizedCountryCode) : '';
+    if (vendorPhone && !isValidInternationalPhone(vendorPhone, normalizedCountryCode)) {
+      toast.error(`أدخل رقم جوال صحيحاً بالرمز الدولي +${normalizedCountryCode}`);
       return;
     }
     try {
@@ -225,14 +249,17 @@ function MaintenanceDialog({ open, onOpenChange, editing, properties }: { open: 
           <Field label={AR.common.cost}><Input type="number" value={form.cost ?? 0} onChange={(e) => setForm({ ...form, cost: parseFloat(e.target.value) })} /></Field>
           <Field label={AR.common.date_scheduled}><Input type="date" value={form.scheduledDate ? toISODate(new Date(form.scheduledDate)) : ''} onChange={(e) => setForm({ ...form, scheduledDate: e.target.value ? new Date(e.target.value) : undefined })} /></Field>
           <Field label={AR.common.vendor}><Input value={form.vendorName || ''} onChange={(e) => setForm({ ...form, vendorName: e.target.value })} /></Field>
-          <Field label={`${AR.common.phone} (966)`}>
+          <Field label={`${AR.common.phone} (+${normalizedCountryCode})`}>
             <Input
               dir="ltr"
               inputMode="tel"
-              placeholder="9665XXXXXXXX"
+              placeholder={`${normalizedCountryCode}XXXXXXXXX`}
               value={form.vendorPhone || ''}
               onChange={(e) => setForm({ ...form, vendorPhone: e.target.value })}
-              onBlur={(e) => setForm({ ...form, vendorPhone: normalizeSaudiPhone(e.target.value) })}
+              onBlur={(e) => setForm({
+                ...form,
+                vendorPhone: normalizeInternationalPhone(e.target.value, normalizedCountryCode),
+              })}
             />
           </Field>
           <Field label={AR.maintenance.description} className="md:col-span-2"><Textarea value={form.description || ''} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>

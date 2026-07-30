@@ -1,4 +1,4 @@
-import { db } from './db';
+import { db, ensureDefaults } from './db';
 import { validateBackupPayload } from '../utils/backupValidation';
 import { v4 as uuid } from 'uuid';
 import type {
@@ -10,6 +10,8 @@ import {
   roundCurrency,
 } from '../utils/financialCalculations';
 import { allocateInvoiceAmounts, calculateIntervals } from '../utils/contractCalculations';
+import { nextContractNumber, planMissingContractNumbers } from '../utils/contractNumbers';
+import { getUnit, hasManagedUnits, setBuildingUnitStatus } from '../utils/buildingUnits';
 export { calculateIntervals } from '../utils/contractCalculations';
 
 // ---------- ACTIVITY LOG ----------
@@ -81,8 +83,8 @@ function padSeq(n: number): string {
 }
 
 export async function createContractWithInvoices(
-  data: Omit<Contract, 'id' | 'createdAt' | 'remainingBalance'>
-): Promise<{ contractId: string; invoicesCreated: number }> {
+  data: Omit<Contract, 'id' | 'createdAt' | 'remainingBalance' | 'contractNumber'>
+): Promise<{ contractId: string; contractNumber: string; invoicesCreated: number }> {
   if (!Number.isFinite(data.totalAmount) || data.totalAmount <= 0) {
     throw new Error('يجب أن تكون القيمة الإجمالية للعقد أكبر من صفر.');
   }
@@ -90,14 +92,27 @@ export async function createContractWithInvoices(
   const intervals = calculateIntervals(data.startDate, data.endDate, data.paymentFrequency);
   const totalAmount = roundCurrency(data.totalAmount);
   const invoiceAmounts = allocateInvoiceAmounts(totalAmount, intervals.length);
+  let contractNumber = '';
 
   await db.transaction(
     'rw',
     db.contracts, db.invoices, db.properties, db.activityLogs,
     async () => {
+      const property = await db.properties.get(data.propertyId);
+      if (!property) throw new Error('العقار المختار غير موجود.');
+      if (hasManagedUnits(property)) {
+        if (!data.unitId) throw new Error('يرجى اختيار الشقة أو الملحق.');
+        const unit = getUnit(property, data.unitId);
+        if (!unit) throw new Error('الوحدة المختارة غير موجودة.');
+        if (unit.status !== 'vacant') throw new Error('الوحدة المختارة لم تعد شاغرة.');
+      } else if (property.status !== 'vacant') {
+        throw new Error('العقار المختار لم يعد شاغراً.');
+      }
+      contractNumber = nextContractNumber(await db.contracts.toArray());
       await db.contracts.add({
         ...data,
         id: contractId,
+        contractNumber,
         totalAmount,
         remainingBalance: totalAmount,
         createdAt: new Date(),
@@ -129,15 +144,32 @@ export async function createContractWithInvoices(
         await db.invoices.add(inv);
       }
       const nextStatus = data.contractType === 'rent' ? 'rented' : 'sold';
-      await db.properties.update(data.propertyId, { status: nextStatus, updatedAt: new Date() });
+      if (hasManagedUnits(property) && data.unitId) {
+        await db.properties.put(setBuildingUnitStatus(property, data.unitId, nextStatus));
+      } else {
+        await db.properties.update(data.propertyId, { status: nextStatus, updatedAt: new Date() });
+      }
       await db.activityLogs.add({
         id: uuid(), action: 'إبرام عقد جديد', module: 'contracts',
-        timestamp: new Date(), details: `تم إنشاء ${intervals.length} فاتورة`,
+        timestamp: new Date(), details: `${contractNumber} — تم إنشاء ${intervals.length} فاتورة`,
       });
     }
   );
 
-  return { contractId, invoicesCreated: intervals.length };
+  return { contractId, contractNumber, invoicesCreated: intervals.length };
+}
+
+export async function ensureContractNumbers(): Promise<number> {
+  let updated = 0;
+  await db.transaction('rw', db.contracts, async () => {
+    const contracts = await db.contracts.toArray();
+    const planned = planMissingContractNumbers(contracts);
+    for (const item of planned) {
+      await db.contracts.update(item.id, { contractNumber: item.contractNumber });
+      updated += 1;
+    }
+  });
+  return updated;
 }
 
 export async function terminateContract(id: string): Promise<void> {
@@ -159,7 +191,12 @@ export async function terminateContract(id: string): Promise<void> {
       status: 'terminated',
       remainingBalance: roundCurrency(remainingBalance),
     });
-    await db.properties.update(contract.propertyId, { status: 'vacant', updatedAt: new Date() });
+    const property = await db.properties.get(contract.propertyId);
+    if (property && contract.unitId && hasManagedUnits(property)) {
+      await db.properties.put(setBuildingUnitStatus(property, contract.unitId, 'vacant'));
+    } else {
+      await db.properties.update(contract.propertyId, { status: 'vacant', updatedAt: new Date() });
+    }
     await db.activityLogs.add({ id: uuid(), action: 'إنهاء عقد', module: 'contracts', timestamp: new Date(), details: id });
   });
 }
@@ -172,15 +209,29 @@ export async function deleteContract(id: string): Promise<void> {
     await db.payments.where('contractId').equals(id).delete();
     await db.documents.where('relatedId').equals(id).delete();
     await db.contracts.delete(id);
-    await db.properties.update(contract.propertyId, { status: 'vacant', updatedAt: new Date() });
+    const property = await db.properties.get(contract.propertyId);
+    if (property && contract.unitId && hasManagedUnits(property)) {
+      await db.properties.put(setBuildingUnitStatus(property, contract.unitId, 'vacant'));
+    } else {
+      await db.properties.update(contract.propertyId, { status: 'vacant', updatedAt: new Date() });
+    }
     await db.activityLogs.add({ id: uuid(), action: 'حذف عقد وفواتيره', module: 'contracts', timestamp: new Date(), details: id });
   });
 }
 
 // ---------- PAYMENTS ----------
-export async function recordPayment(data: Omit<Payment, 'id'>): Promise<string> {
+export interface PaymentReceiptAttachment {
+  fileName: string;
+  fileType: string;
+  fileDataBase64: string;
+}
+
+export async function recordPayment(
+  data: Omit<Payment, 'id'>,
+  receipt?: PaymentReceiptAttachment,
+): Promise<string> {
   const id = uuid();
-  await db.transaction('rw', db.payments, db.invoices, db.contracts, db.activityLogs, async () => {
+  await db.transaction('rw', db.payments, db.invoices, db.contracts, db.documents, db.activityLogs, async () => {
     const invoice = await db.invoices.get(data.invoiceId);
     if (!invoice) throw new Error('الفاتورة غير موجودة.');
     if (invoice.contractId !== data.contractId) throw new Error('الفاتورة لا تتبع العقد المحدد.');
@@ -190,6 +241,17 @@ export async function recordPayment(data: Omit<Payment, 'id'>): Promise<string> 
     if (!Number.isFinite(amountPaid) || amountPaid <= 0) throw new Error('مبلغ السداد غير صالح.');
     if (amountPaid > balance) throw new Error('مبلغ السداد يتجاوز الرصيد المتبقي.');
     await db.payments.add({ ...data, amountPaid, id });
+    if (receipt) {
+      await db.documents.add({
+        id: uuid(),
+        relatedType: 'payment',
+        relatedId: id,
+        fileName: receipt.fileName,
+        fileType: receipt.fileType,
+        fileDataBase64: receipt.fileDataBase64,
+        uploadedAt: new Date(),
+      });
+    }
     const newPaid = roundCurrency(invoice.amountPaid + amountPaid);
     let newStatus: Invoice['status'] = 'unpaid';
     if (newPaid >= invoice.amountDue) newStatus = 'paid';
@@ -215,7 +277,7 @@ export async function recordPayment(data: Omit<Payment, 'id'>): Promise<string> 
 }
 
 export async function deletePayment(id: string): Promise<void> {
-  await db.transaction('rw', db.payments, db.invoices, db.contracts, db.activityLogs, async () => {
+  await db.transaction('rw', db.payments, db.invoices, db.contracts, db.documents, db.activityLogs, async () => {
     const payment = await db.payments.get(id);
     if (!payment) throw new Error('عملية السداد غير موجودة.');
 
@@ -223,6 +285,7 @@ export async function deletePayment(id: string): Promise<void> {
     if (!invoice) throw new Error('لا يمكن حذف السداد لأن الفاتورة المرتبطة غير موجودة.');
 
     await db.payments.delete(id);
+    await db.documents.where('relatedId').equals(id).delete();
     const remainingPayments = await db.payments.where('invoiceId').equals(invoice.id!).toArray();
     const invoiceState = calculateInvoiceStateFromPayments(invoice, remainingPayments);
 
@@ -262,7 +325,7 @@ export async function uploadDocument(file: File, relatedType: DocumentFile['rela
     fileDataBase64: base64,
     uploadedAt: new Date(),
   });
-  await logActivity('رفع مستند', 'contracts', file.name);
+  await logActivity('رفع مستند', relatedType === 'payment' ? 'payments' : 'contracts', file.name);
 }
 
 export function fileToBase64(file: File): Promise<string> {
@@ -411,6 +474,8 @@ export async function importBackup(json: string): Promise<{ ok: boolean; message
       : 'تعذّر استيراد البيانات، ولم يتم تغيير البيانات الحالية';
     return { ok: false, message: reason };
   }
+  await ensureDefaults();
+  await ensureContractNumbers();
   const warning = validation.warnings.length ? ` — ${validation.warnings.join(' — ')}` : '';
   return { ok: true, message: `تم استيراد النسخة الاحتياطية بنجاح${warning}` };
 }

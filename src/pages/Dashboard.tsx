@@ -25,6 +25,7 @@ import {
   summarizeCashPaymentRows,
   summarizeInvoiceFinancialRows,
 } from '../utils/financialCalculations';
+import { calculateOccupancyStats } from '../utils/buildingUnits';
 
 const CHART_COLORS = ['#0284C7', '#16A34A', '#CA8A04', '#DC2626', '#7C3AED'];
 
@@ -40,8 +41,8 @@ export default function Dashboard() {
   const settings = useLiveQuery(() => db.settings.get('singleton'), []);
 
   const activeContracts = contracts.filter((c) => c.status === 'active').length;
-  const rented = properties.filter((p) => p.status === 'rented' || p.status === 'sold').length;
-  const occupancy = properties.length ? Math.round((rented / properties.length) * 100) : 0;
+  const occupancyStats = useMemo(() => calculateOccupancyStats(properties), [properties]);
+  const occupancy = occupancyStats.occupancy;
   const financialRows = useMemo(
     () => buildInvoiceFinancialRows(invoices, payments),
     [invoices, payments],
@@ -117,7 +118,7 @@ export default function Dashboard() {
             table: {
               headers: ['المؤشر', 'القيمة'],
               rows: [
-                [AR.dashboard.totalProperties, properties.length],
+                [AR.dashboard.totalProperties, occupancyStats.total],
                 [AR.dashboard.activeContracts, activeContracts],
                 [AR.dashboard.totalCustomers, customers.length],
                 [AR.dashboard.monthlyIncome, fmtMoney(monthlyIncome)],
@@ -155,7 +156,7 @@ export default function Dashboard() {
       sheetName: 'لوحة المعلومات',
       headers: ['المؤشر', 'القيمة'],
       rows: [
-        [AR.dashboard.totalProperties, properties.length],
+        [AR.dashboard.totalProperties, occupancyStats.total],
         [AR.dashboard.activeContracts, activeContracts],
         [AR.dashboard.totalCustomers, customers.length],
         [AR.dashboard.monthlyIncome, fmtMoney(monthlyIncome)],
@@ -190,7 +191,7 @@ export default function Dashboard() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
-        <Kpi icon={Building2}    label={AR.dashboard.totalProperties} value={properties.length}     tone="accent"   testId="kpi-properties" />
+        <Kpi icon={Building2}    label={AR.dashboard.totalProperties} value={occupancyStats.total}  tone="accent"   testId="kpi-properties" />
         <Kpi icon={FileText}     label={AR.dashboard.activeContracts} value={activeContracts}        tone="success"  testId="kpi-active-contracts" />
         <Kpi icon={Users}        label={AR.dashboard.totalCustomers}  value={customers.length}       tone="accent"   testId="kpi-customers" />
         <Kpi icon={Wallet}       label={AR.dashboard.monthlyIncome}   value={fmtMoney(monthlyIncome)} tone="primary" testId="kpi-monthly-income" />

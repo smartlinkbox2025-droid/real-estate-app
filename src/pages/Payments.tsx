@@ -3,7 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../database/db';
 import { AR } from '../constants/arabicTerms';
 import type { PaymentMethod, InvoiceStatus } from '../models/types';
-import { deletePayment, recordPayment } from '../database/queries';
+import { deletePayment, fileToBase64, recordPayment } from '../database/queries';
 import { fmtDate, fmtMoney, isDateWithinInclusiveRange, toISODate } from '../utils/dateHelpers';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -13,7 +13,7 @@ import { Badge } from '../components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
-import { Wallet, Search, Receipt, FileDown, Trash2 } from 'lucide-react';
+import { Wallet, Search, Receipt, FileDown, ImagePlus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { exportToExcel } from '../utils/excelExporter';
 import { generateReceipt, generateArabicPDF } from '../utils/pdfGenerator';
@@ -107,7 +107,7 @@ export default function Payments() {
         amountDue: fmtMoney(balance),
         companyName: settings?.companyName,
       });
-      const url = buildWhatsAppUrl(customer.phone, message);
+      const url = buildWhatsAppUrl(customer.phone, message, settings?.countryCode || '966');
       window.open(url, '_blank', 'noopener,noreferrer');
     } catch (error: any) {
       toast.error(error?.message || 'تعذّر فتح واتساب');
@@ -221,6 +221,7 @@ export default function Payments() {
         invoiceNumber: inv?.invoiceNumber,
         companyName: settings?.companyName,
         companyPhone: settings?.phone,
+        currency: settings?.currency,
         logoBase64: settings?.logoBase64,
       });
     } catch (e: any) {
@@ -449,6 +450,8 @@ export default function Payments() {
 }
 
 function PaymentDialog({ invoiceId, contractId, balance, onClose }: { invoiceId: string; contractId: string; balance: number; onClose: () => void }) {
+  const receiptRef = useRef<HTMLInputElement>(null);
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [form, setForm] = useState({
     amountPaid: balance,
     paymentDate: toISODate(new Date()),
@@ -461,15 +464,32 @@ function PaymentDialog({ invoiceId, contractId, balance, onClose }: { invoiceId:
     if (!form.amountPaid || form.amountPaid <= 0) { toast.error('يرجى إدخال مبلغ صالح'); return; }
     if (form.amountPaid > balance) { toast.error(`المبلغ يتجاوز الرصيد المتبقي (${fmtMoney(balance)})`); return; }
     try {
-      await recordPayment({ contractId, invoiceId, amountPaid: Number(form.amountPaid), paymentDate: new Date(form.paymentDate), paymentMethod: form.paymentMethod, referenceNumber: form.referenceNumber || undefined, notes: form.notes || undefined, status: 'completed' });
-      toast.success('تم تسجيل السداد');
+      const receipt = receiptFile ? {
+        fileName: receiptFile.name,
+        fileType: receiptFile.type,
+        fileDataBase64: await fileToBase64(receiptFile),
+      } : undefined;
+      await recordPayment(
+        {
+          contractId,
+          invoiceId,
+          amountPaid: Number(form.amountPaid),
+          paymentDate: new Date(form.paymentDate),
+          paymentMethod: form.paymentMethod,
+          referenceNumber: form.referenceNumber || undefined,
+          notes: form.notes || undefined,
+          status: 'completed',
+        },
+        receipt,
+      );
+      toast.success(receiptFile ? 'تم تسجيل السداد وإرفاق صورة الوصل' : 'تم تسجيل السداد');
       onClose();
     } catch (e: any) { toast.error(e.message || AR.common.error); }
   };
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-md" data-testid="payment-dialog">
+      <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto" data-testid="payment-dialog">
         <DialogHeader><DialogTitle>{AR.payment.addNew}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div className="rounded-xl bg-muted/60 px-4 py-3">
@@ -488,6 +508,64 @@ function PaymentDialog({ invoiceId, contractId, balance, onClose }: { invoiceId:
           </Field>
           <Field label={AR.payment.referenceNumber}><Input value={form.referenceNumber} onChange={(e) => setForm({ ...form, referenceNumber: e.target.value })} data-testid="payment-reference-input" /></Field>
           <Field label={AR.payment.notes}><Input value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></Field>
+          <Field label="إرفاق صورة الوصل (اختياري)">
+            <div
+              className="flex cursor-pointer items-center gap-3 rounded-xl border border-dashed border-border bg-muted/30 px-4 py-3 transition-colors hover:bg-muted/50"
+              onClick={() => receiptRef.current?.click()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => event.key === 'Enter' && receiptRef.current?.click()}
+              data-testid="payment-receipt-upload"
+            >
+              <ImagePlus className="h-5 w-5 shrink-0 text-muted-foreground" />
+              {receiptFile ? (
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{receiptFile.name}</p>
+                  <p className="text-xs text-muted-foreground">{(receiptFile.size / 1024).toFixed(0)} KB</p>
+                </div>
+              ) : (
+                <div className="flex-1">
+                  <p className="text-sm text-muted-foreground">اضغط لإرفاق صورة وصل السداد</p>
+                  <p className="text-xs text-muted-foreground">JPG · PNG · WEBP - بحد أقصى 8 MB</p>
+                </div>
+              )}
+              {receiptFile && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="shrink-0 text-destructive hover:text-destructive"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setReceiptFile(null);
+                  }}
+                >
+                  إلغاء
+                </Button>
+              )}
+            </div>
+            <input
+              ref={receiptRef}
+              type="file"
+              className="hidden"
+              accept="image/jpeg,image/png,image/webp"
+              data-testid="payment-receipt-input"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (!file) return;
+                if (!file.type.startsWith('image/')) {
+                  toast.error('يرجى اختيار صورة وصل بصيغة JPG أو PNG أو WEBP');
+                  return;
+                }
+                if (file.size > 8 * 1024 * 1024) {
+                  toast.error('حجم صورة الوصل يجب ألا يتجاوز 8 MB');
+                  return;
+                }
+                setReceiptFile(file);
+              }}
+            />
+          </Field>
         </div>
         <DialogFooter className="gap-2 sm:gap-2">
           <Button variant="outline" onClick={onClose}>{AR.actions.cancel}</Button>
